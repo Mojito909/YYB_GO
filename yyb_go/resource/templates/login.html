@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="system" data-theme-resolved="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f4f6fa">
+  <title>登录 · YYB Go 控制台</title>
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/login.css">
+  <script src="/static/js/theme.js"></script>
+</head>
+<body>
+  <main class="login-page">
+    <section class="login-card" aria-label="管理员登录">
+      <div class="login-brand">
+        <div class="mark" aria-hidden="true"><span>Y</span></div>
+        <div>
+          <h1>YYB Go 控制台</h1>
+          <p>微信账号与小程序能力工作台</p>
+        </div>
+      </div>
+
+      <form class="login-form" id="loginForm" novalidate>
+        <div class="field">
+          <label for="username">用户名</label>
+          <input class="input" id="username" name="username" autocomplete="username"
+                 placeholder="默认 admin" required autofocus spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="password">密码</label>
+          <input class="input" id="password" name="password" type="password"
+                 autocomplete="current-password" placeholder="请输入管理员密码" required>
+        </div>
+        <p class="login-error" id="loginError" role="alert"></p>
+        <button class="btn primary login-submit" id="submitBtn" type="submit">登 录</button>
+      </form>
+
+      <div class="login-hint"><span class="login-hint-dot"></span><span>初始密码在服务首次启动时输出到日志，也可通过 YYB_ADMIN_PASSWORD 指定</span></div>
+    </section>
+  </main>
+
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/login.js"></script>
+</body>
+</html>

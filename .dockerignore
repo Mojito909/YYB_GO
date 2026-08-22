@@ -1,0 +1,14 @@
+.git
+.github
+.gitignore
+
+# Runtime state and sensitive local data
+yyb_go/resource/db/
+yyb_go/resource/qr/
+yyb_go/resource/avatars/
+
+# Local/editor/build artifacts
+**/.DS_Store
+**/*.log
+yyb_go/yyb-go
+yyb_go/bin/

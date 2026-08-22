@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS features (
     description TEXT,
     enabled     INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE TABLE IF NOT EXISTS admin_users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+);
 `
 
 var defaultFeatures = []Feature{
@@ -108,6 +116,14 @@ type Feature struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
 	Enabled     bool    `json:"enabled"`
+}
+
+type AdminUser struct {
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	PasswordHash string `json:"-"`
+	CreatedAt    int64  `json:"created_at"`
+	UpdatedAt    int64  `json:"updated_at"`
 }
 
 func Open(path string) (*DB, error) {
@@ -414,6 +430,45 @@ func (db *DB) GetFeatureByName(ctx context.Context, name string) (*Feature, erro
 		return nil, err
 	}
 	return &f, nil
+}
+
+// CountAdminUsers 返回管理员用户数量，用于判断是否需要初始化引导账号。
+func (db *DB) CountAdminUsers(ctx context.Context) (int, error) {
+	var n int
+	err := db.sql.QueryRowContext(ctx, "SELECT count(*) FROM admin_users").Scan(&n)
+	return n, err
+}
+
+// EnsureAdminUser 在用户名不存在时创建管理员，已存在则忽略。
+func (db *DB) EnsureAdminUser(ctx context.Context, username, passwordHash string) error {
+	now := time.Now().Unix()
+	_, err := db.sql.ExecContext(ctx,
+		"INSERT OR IGNORE INTO admin_users(username, password_hash, created_at, updated_at) VALUES(?,?,?,?)",
+		username, passwordHash, now, now,
+	)
+	return err
+}
+
+// GetAdminUser 按用户名查询管理员。
+func (db *DB) GetAdminUser(ctx context.Context, username string) (*AdminUser, error) {
+	var u AdminUser
+	err := db.sql.QueryRowContext(ctx,
+		"SELECT id, username, password_hash, created_at, updated_at FROM admin_users WHERE username=?",
+		username,
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// SetAdminPassword 更新管理员密码哈希。
+func (db *DB) SetAdminPassword(ctx context.Context, username, passwordHash string) error {
+	_, err := db.sql.ExecContext(ctx,
+		"UPDATE admin_users SET password_hash=?, updated_at=? WHERE username=?",
+		passwordHash, time.Now().Unix(), username,
+	)
+	return err
 }
 
 func (a *WechatAccount) Public() AccountPublic {

@@ -27,6 +27,13 @@ const (
 	callbackURL  = "https://yybadaccess.3g.qq.com/pc_yyb/pcyyb_oauth"
 	qrBase       = "https://open.weixin.qq.com/connect/qrcode/"
 	longPollBase = "https://long.open.weixin.qq.com/connect/l/qrconnect"
+
+	// longPollTimeout 是单次微信长轮询的最长等待时间；微信侧通常在 25s 左右返回 408。
+	longPollTimeout = 35 * time.Second
+	// watchMinInterval 保证后台 watcher 即使遇到即时返回也不会形成忙循环。
+	watchMinInterval = time.Second
+	// watchRetryDelay 是长轮询出错（超时、网络抖动）后的重试间隔。
+	watchRetryDelay = 2 * time.Second
 )
 
 var (
@@ -47,10 +54,59 @@ type Session struct {
 	LoginBuffer   string
 	Status        string
 	Error         string
-	mu            sync.Mutex
+
+	// pollClient 专用于微信长轮询，超时必须大于 longPollTimeout，
+	// 否则会被 HTTPClient 的短超时（RequestTimeout）提前打断。
+	pollClient *http.Client
+	// errCode 保存最近一次微信返回的 wx_errcode，供状态快照透出。
+	errCode *int
+	// mu 只保护上面的状态字段，任何网络请求都不得在持有它时进行，
+	// 这样 /qr/{id}/poll 才能始终毫秒级读到快照。
+	mu sync.Mutex
+	// confirmMu 串行化 confirm 流程，避免并发重复换取 login buffer。
+	confirmMu sync.Mutex
+	// stop 关闭后后台 watcher 退出；stopped 保证幂等且不会被重新启动。
+	stop    chan struct{}
+	stopped bool
 }
 
 func (s *Session) Age() time.Duration { return time.Since(s.CreatedAt) }
+
+// Snapshot 无阻塞返回当前登录状态，由后台 watcher 持续刷新。
+func (s *Session) Snapshot() PollResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.LoginBuffer != "" {
+		return PollResult{Status: "confirmed"}
+	}
+	if s.AuthorizeCode != "" {
+		code := 405
+		return PollResult{Status: "authorized", ErrCode: &code, Code: s.AuthorizeCode}
+	}
+	status := s.Status
+	if status == "" {
+		status = "pending"
+	}
+	var errCode *int
+	if s.errCode != nil {
+		n := *s.errCode
+		errCode = &n
+	}
+	return PollResult{Status: status, ErrCode: errCode, Message: s.Error}
+}
+
+// StopWatch 幂等地停止后台 watcher，并中断其在飞的长轮询。
+func (s *Session) StopWatch() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return
+	}
+	s.stopped = true
+	if s.stop != nil {
+		close(s.stop)
+	}
+}
 
 type ImageResult struct {
 	Session    *Session
@@ -124,6 +180,8 @@ func (c *Client) CreateSession(ctx context.Context) (*Session, error) {
 		HTTPClient: hc,
 		Jar:        jar,
 		Status:     "pending",
+		pollClient: &http.Client{Timeout: longPollTimeout + 5*time.Second, Jar: jar},
+		stop:       make(chan struct{}),
 	}, nil
 }
 
@@ -143,74 +201,139 @@ func (c *Client) FetchQRCodeImage(ctx context.Context, sess *Session) ([]byte, e
 	return io.ReadAll(resp.Body)
 }
 
-func (c *Client) PollQRCode(ctx context.Context, sess *Session) (PollResult, error) {
+// StartWatch 启动后台 goroutine 持续代理微信长轮询并把结果写入会话状态。
+// HTTP 侧因此只需读 Snapshot()，不再被 25~35s 的长轮询挂住。
+func (c *Client) StartWatch(sess *Session) {
 	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if sess.LoginBuffer != "" {
-		return PollResult{Status: "confirmed"}, nil
+	if sess.stopped {
+		sess.mu.Unlock()
+		return
 	}
-	if sess.AuthorizeCode != "" {
-		code := 405
-		return PollResult{Status: "authorized", ErrCode: &code, Code: sess.AuthorizeCode}, nil
+	if sess.stop == nil {
+		sess.stop = make(chan struct{})
 	}
+	if sess.pollClient == nil {
+		sess.pollClient = &http.Client{Timeout: longPollTimeout + 5*time.Second, Jar: sess.Jar}
+	}
+	stop := sess.stop
+	sess.mu.Unlock()
+	go c.watch(sess, stop)
+}
+
+func (c *Client) watch(sess *Session, stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		start := time.Now()
+		status, err := c.pollOnce(sess, stop)
+		if err != nil {
+			// 长轮询超时或网络抖动：微信侧未给出状态，保持原状态稍后重试。
+			select {
+			case <-stop:
+				return
+			case <-time.After(watchRetryDelay):
+			}
+			continue
+		}
+		if terminal(status) {
+			return
+		}
+		// 微信偶尔会立刻返回，加一个下限间隔避免空转。
+		if wait := watchMinInterval - time.Since(start); wait > 0 {
+			select {
+			case <-stop:
+				return
+			case <-time.After(wait):
+			}
+		}
+	}
+}
+
+// pollOnce 执行一次微信长轮询，并把解析结果写回会话状态，返回最新状态名。
+// 注意：网络请求期间不持有 sess.mu。
+func (c *Client) pollOnce(sess *Session, stop <-chan struct{}) (string, error) {
 	u := longPollBase + "?" + url.Values{
 		"uuid": {sess.WXUUID},
 		"_":    {strconv.FormatInt(time.Now().UnixMilli(), 10)},
 	}.Encode()
-	reqCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), longPollTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u, nil)
+	// 会话被丢弃时立即中断在飞的长轮询。
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return PollResult{}, err
+		return "", err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := sess.HTTPClient.Do(req)
+	resp, err := sess.pollClient.Do(req)
 	if err != nil {
-		return PollResult{}, err
+		return "", err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	text := string(body)
 	errcode, code := parsePoll(text)
+
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.errCode = errcode
 	switch {
 	case errcode != nil && *errcode == 408:
 		sess.Status = "pending"
-		return PollResult{Status: "pending", ErrCode: errcode, Code: code}, nil
 	case errcode != nil && *errcode == 404:
 		sess.Status = "scanned"
-		return PollResult{Status: "scanned", ErrCode: errcode, Code: code}, nil
 	case errcode != nil && *errcode == 403:
 		sess.Status = "cancelled"
-		return PollResult{Status: "cancelled", ErrCode: errcode, Code: code}, nil
 	case errcode != nil && *errcode == 402:
 		sess.Status = "expired"
-		return PollResult{Status: "expired", ErrCode: errcode, Code: code}, nil
 	case errcode != nil && *errcode == 405 && code != "":
 		sess.AuthorizeCode = code
 		sess.Status = "authorized"
-		return PollResult{Status: "authorized", ErrCode: errcode, Code: code}, nil
 	default:
-		sess.Status = "unknown"
 		if len(text) > 200 {
 			text = text[:200]
 		}
+		sess.Status = "unknown"
 		sess.Error = text
-		return PollResult{Status: "unknown", ErrCode: errcode, Code: code, Message: text}, nil
 	}
+	return sess.Status, nil
+}
+
+// terminal 判断某个状态是否已无需继续轮询。
+func terminal(status string) bool {
+	switch status {
+	case "authorized", "confirmed", "cancelled", "expired", "unknown":
+		return true
+	}
+	return false
 }
 
 func (c *Client) GetLoginBuffer(ctx context.Context, sess *Session) (protocol.LoginBufferResult, error) {
+	// confirmMu 串行化换取流程；网络请求期间不持有 sess.mu，保证 Snapshot() 不被阻塞。
+	sess.confirmMu.Lock()
+	defer sess.confirmMu.Unlock()
+
 	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if sess.LoginBuffer != "" && sess.Credentials != nil {
-		return protocol.LoginBufferResult{LoginBuffer: sess.LoginBuffer, Credentials: *sess.Credentials}, nil
+	buffer, creds0, authCode := sess.LoginBuffer, sess.Credentials, sess.AuthorizeCode
+	sess.mu.Unlock()
+	if buffer != "" && creds0 != nil {
+		return protocol.LoginBufferResult{LoginBuffer: buffer, Credentials: *creds0}, nil
 	}
-	if sess.AuthorizeCode == "" {
+	if authCode == "" {
 		return protocol.LoginBufferResult{}, fmt.Errorf("QR session is not authorized yet")
 	}
 	cb := callbackURL + "?" + url.Values{
 		"login_type": {"WX"},
-		"code":       {sess.AuthorizeCode},
+		"code":       {authCode},
 		"state":      {"web"},
 	}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cb, nil)
@@ -232,9 +355,11 @@ func (c *Client) GetLoginBuffer(ctx context.Context, sess *Session) (protocol.Lo
 	if err != nil {
 		return protocol.LoginBufferResult{}, err
 	}
+	sess.mu.Lock()
 	sess.Credentials = &creds
 	sess.LoginBuffer = lb
 	sess.Status = "confirmed"
+	sess.mu.Unlock()
 	return protocol.LoginBufferResult{LoginBuffer: lb, Credentials: creds}, nil
 }
 

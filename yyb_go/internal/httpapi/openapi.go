@@ -13,6 +13,7 @@ func newOpenAPISpec() map[string]any {
 		},
 		"tags": []map[string]any{
 			{"name": "health", "description": "服务健康检查"},
+			{"name": "auth", "description": "管理员登录鉴权"},
 			{"name": "qr", "description": "微信扫码登录"},
 			{"name": "accounts", "description": "已保存的微信账号"},
 			{"name": "wxapp", "description": "wxapp 业务接口调用"},
@@ -26,6 +27,54 @@ func newOpenAPISpec() map[string]any {
 					nil,
 					defaulted(map[string]any{
 						"200": jsonResponse("服务正常。", refSchema("HealthResponse")),
+					}),
+				),
+			},
+			"/auth/login": map[string]any{
+				"post": openAPIOperation(
+					[]string{"auth"},
+					"管理员登录",
+					nil,
+					jsonRequestBody(refSchema("LoginRequest")),
+					defaulted(map[string]any{
+						"200": jsonResponse("登录成功，会话通过 Set-Cookie 下发。", refSchema("LoginResponse")),
+					}),
+				),
+			},
+			"/auth/logout": map[string]any{
+				"post": openAPIOperation(
+					[]string{"auth"},
+					"退出登录",
+					nil,
+					nil,
+					defaulted(map[string]any{
+						"200": jsonResponse("已退出登录。", objectSchema(nil, map[string]any{
+							"logged_out": map[string]any{"type": "boolean"},
+						})),
+					}),
+				),
+			},
+			"/auth/me": map[string]any{
+				"get": openAPIOperation(
+					[]string{"auth"},
+					"查询当前会话",
+					nil,
+					nil,
+					defaulted(map[string]any{
+						"200": jsonResponse("当前登录用户。", refSchema("LoginResponse")),
+					}),
+				),
+			},
+			"/auth/password": map[string]any{
+				"post": openAPIOperation(
+					[]string{"auth"},
+					"修改管理员密码",
+					nil,
+					jsonRequestBody(refSchema("ChangePasswordRequest")),
+					defaulted(map[string]any{
+						"200": jsonResponse("密码已修改，其他会话已失效。", objectSchema(nil, map[string]any{
+							"password_changed": map[string]any{"type": "boolean"},
+						})),
 					}),
 				),
 			},
@@ -177,6 +226,17 @@ func newOpenAPISpec() map[string]any {
 				}),
 				"HealthResponse": objectSchema([]string{"ok"}, map[string]any{
 					"ok": map[string]any{"type": "boolean"},
+				}),
+				"LoginRequest": objectSchema([]string{"username", "password"}, map[string]any{
+					"username": map[string]any{"type": "string", "description": "管理员用户名，默认 admin。"},
+					"password": map[string]any{"type": "string", "description": "管理员密码。"},
+				}),
+				"LoginResponse": objectSchema([]string{"username"}, map[string]any{
+					"username": map[string]any{"type": "string"},
+				}),
+				"ChangePasswordRequest": objectSchema([]string{"old_password", "new_password"}, map[string]any{
+					"old_password": map[string]any{"type": "string", "description": "当前密码。"},
+					"new_password": map[string]any{"type": "string", "description": "新密码，至少 6 位。"},
 				}),
 				"QRCreateResponse": objectSchema([]string{"session_id", "status", "image_url"}, map[string]any{
 					"session_id":   map[string]any{"type": "string"},

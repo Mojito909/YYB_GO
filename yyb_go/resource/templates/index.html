@@ -1,1081 +1,325 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="system" data-theme-resolved="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f4f6fa">
   <title>YYB Go 控制台</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --bg: oklch(1 0 0);
-      --bg-soft: oklch(0.974 0.004 250);
-      --surface: oklch(0.986 0.004 250);
-      --surface-strong: oklch(0.948 0.009 250);
-      --ink: oklch(0.19 0.025 252);
-      --muted: oklch(0.43 0.025 252);
-      --faint: oklch(0.58 0.018 252);
-      --line: oklch(0.885 0.012 250);
-      --primary: oklch(0.54 0.205 3);
-      --primary-hover: oklch(0.48 0.195 3);
-      --accent: oklch(0.44 0.112 190);
-      --accent-soft: oklch(0.94 0.027 190);
-      --success: oklch(0.55 0.135 145);
-      --success-soft: oklch(0.94 0.035 145);
-      --warning: oklch(0.68 0.135 78);
-      --warning-soft: oklch(0.955 0.04 78);
-      --danger: oklch(0.55 0.18 25);
-      --danger-soft: oklch(0.955 0.032 25);
-      --code-bg: oklch(0.16 0.022 252);
-      --code-ink: oklch(0.96 0.006 250);
-      --radius: 8px;
-      --topbar-h: 68px;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    html {
-      height: 100%;
-    }
-
-    body {
-      min-height: 100%;
-      margin: 0;
-      background: var(--bg-soft);
-      color: var(--ink);
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-      font-size: 14px;
-      line-height: 1.45;
-    }
-
-    button,
-    input,
-    select,
-    textarea {
-      font: inherit;
-    }
-
-    button {
-      cursor: pointer;
-    }
-
-    .app {
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .topbar {
-      height: var(--topbar-h);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 18px;
-      padding: 0 28px;
-      background: var(--bg);
-      border-bottom: 1px solid var(--line);
-      position: sticky;
-      top: 0;
-      z-index: 10;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-width: 0;
-    }
-
-    .mark {
-      width: 36px;
-      height: 36px;
-      border-radius: var(--radius);
-      display: grid;
-      place-items: center;
-      background: var(--ink);
-      color: var(--bg);
-      font-weight: 800;
-      letter-spacing: 0;
-    }
-
-    .brand-title {
-      margin: 0;
-      font-size: 18px;
-      font-weight: 760;
-      letter-spacing: 0;
-      line-height: 1.1;
-    }
-
-    .brand-subtitle {
-      margin-top: 3px;
-      color: var(--muted);
-      font-size: 12px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .top-actions,
-    .panel-actions,
-    .inline-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .btn {
-      min-height: 36px;
-      border: 1px solid transparent;
-      border-radius: var(--radius);
-      padding: 8px 12px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 7px;
-      background: var(--bg);
-      color: var(--ink);
-      text-decoration: none;
-      transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
-    }
-
-    .btn:hover {
-      background: var(--surface-strong);
-    }
-
-    .btn:focus-visible,
-    .account-card:focus-visible,
-    .quick-link:focus-visible {
-      outline: 3px solid oklch(0.82 0.08 190);
-      outline-offset: 2px;
-    }
-
-    .btn.primary {
-      background: var(--primary);
-      color: var(--bg);
-      border-color: var(--primary);
-      font-weight: 700;
-    }
-
-    .btn.primary:hover {
-      background: var(--primary-hover);
-      border-color: var(--primary-hover);
-    }
-
-    .btn.secondary {
-      border-color: var(--line);
-    }
-
-    .btn.danger {
-      color: var(--danger);
-      border-color: var(--danger-soft);
-      background: var(--danger-soft);
-    }
-
-    .btn:disabled {
-      cursor: not-allowed;
-      opacity: 0.62;
-    }
-
-    .status-pill {
-      min-height: 30px;
-      border-radius: 999px;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 5px 10px;
-      border: 1px solid var(--line);
-      color: var(--muted);
-      background: var(--surface);
-      white-space: nowrap;
-    }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--faint);
-      flex: 0 0 auto;
-    }
-
-    .status-pill.ok .status-dot,
-    .account-status.alive .status-dot {
-      background: var(--success);
-    }
-
-    .status-pill.bad .status-dot,
-    .account-status.expired .status-dot {
-      background: var(--danger);
-    }
-
-    .shell {
-      width: min(1440px, 100%);
-      margin: 0 auto;
-      padding: 22px 28px 32px;
-      display: grid;
-      gap: 18px;
-    }
-
-    .overview {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 18px;
-      align-items: stretch;
-    }
-
-    .summary {
-      min-width: 0;
-      background: var(--bg);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      padding: 18px;
-      display: grid;
-      gap: 12px;
-    }
-
-    .summary h2 {
-      margin: 0;
-      font-size: 20px;
-      font-weight: 760;
-      letter-spacing: 0;
-      text-wrap: balance;
-    }
-
-    .summary-copy {
-      margin: 0;
-      max-width: 72ch;
-      color: var(--muted);
-    }
-
-    .stat-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
-    .stat-chip {
-      min-height: 32px;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
-      border-radius: 999px;
-      background: var(--surface);
-      border: 1px solid var(--line);
-      color: var(--muted);
-    }
-
-    .stat-chip strong {
-      color: var(--ink);
-      font-weight: 760;
-    }
-
-    .quick-actions {
-      min-width: 260px;
-      background: var(--ink);
-      color: var(--bg);
-      border-radius: var(--radius);
-      padding: 16px;
-      display: grid;
-      align-content: space-between;
-      gap: 14px;
-    }
-
-    .quick-actions p {
-      margin: 0;
-      color: oklch(0.86 0.012 250);
-      font-size: 13px;
-    }
-
-    .quick-actions .btn {
-      background: oklch(0.25 0.028 252);
-      color: var(--bg);
-      border-color: oklch(0.34 0.028 252);
-    }
-
-    .quick-actions .btn:hover {
-      background: oklch(0.31 0.032 252);
-    }
-
-    .account-band,
-    .panel {
-      background: var(--bg);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-    }
-
-    .section-head {
-      min-height: 58px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 14px;
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .section-title {
-      display: grid;
-      gap: 2px;
-      min-width: 0;
-    }
-
-    .section-title h3 {
-      margin: 0;
-      font-size: 15px;
-      font-weight: 760;
-      letter-spacing: 0;
-    }
-
-    .section-title p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 12px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .account-strip {
-      padding: 12px;
-      display: grid;
-      grid-auto-flow: column;
-      grid-auto-columns: minmax(238px, 280px);
-      gap: 10px;
-      overflow-x: auto;
-      scrollbar-width: thin;
-      min-height: 126px;
-    }
-
-    .account-card {
-      width: 100%;
-      min-height: 100px;
-      padding: 12px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface);
-      color: var(--ink);
-      text-align: left;
-      display: grid;
-      grid-template-columns: 42px minmax(0, 1fr);
-      gap: 10px;
-      align-items: start;
-      transition: background 160ms ease, border-color 160ms ease;
-    }
-
-    .account-card:hover {
-      background: var(--bg);
-      border-color: oklch(0.78 0.035 190);
-    }
-
-    .account-card.selected {
-      background: var(--accent-soft);
-      border-color: var(--accent);
-    }
-
-    .avatar {
-      width: 42px;
-      height: 42px;
-      border-radius: 50%;
-      overflow: hidden;
-      background: var(--surface-strong);
-      border: 1px solid var(--line);
-      display: grid;
-      place-items: center;
-      color: var(--muted);
-      font-weight: 760;
-    }
-
-    .avatar img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }
-
-    .account-main {
-      min-width: 0;
-      display: grid;
-      gap: 6px;
-    }
-
-    .account-name {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-weight: 760;
-    }
-
-    .account-status {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .account-meta {
-      color: var(--faint);
-      font-size: 12px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .empty-state {
-      min-height: 100px;
-      display: grid;
-      place-items: center;
-      color: var(--muted);
-      border: 1px dashed var(--line);
-      border-radius: var(--radius);
-      background: var(--surface);
-      padding: 18px;
-      text-align: center;
-    }
-
-    .work-grid {
-      display: grid;
-      grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.15fr) minmax(260px, 0.65fr);
-      gap: 18px;
-      align-items: start;
-    }
-
-    .panel-body {
-      padding: 16px;
-      display: grid;
-      gap: 14px;
-    }
-
-    .form-grid {
-      display: grid;
-      gap: 14px;
-    }
-
-    .field {
-      display: grid;
-      gap: 7px;
-    }
-
-    .field label {
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 680;
-    }
-
-    .input,
-    .select,
-    .textarea {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--bg);
-      color: var(--ink);
-      padding: 10px 11px;
-      outline: none;
-      transition: border-color 160ms ease, background 160ms ease;
-    }
-
-    .input:focus,
-    .select:focus,
-    .textarea:focus {
-      border-color: var(--accent);
-      background: var(--surface);
-    }
-
-    .textarea {
-      min-height: 164px;
-      resize: vertical;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-      line-height: 1.55;
-      font-size: 13px;
-    }
-
-    .selected-account {
-      min-height: 44px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface);
-      padding: 10px 11px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      color: var(--muted);
-    }
-
-    .selected-account strong {
-      color: var(--ink);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .result-panel .panel-body {
-      gap: 10px;
-    }
-
-    .result-box {
-      min-height: 360px;
-      max-height: 560px;
-      margin: 0;
-      overflow: auto;
-      border-radius: var(--radius);
-      background: var(--code-bg);
-      color: var(--code-ink);
-      padding: 14px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-      font-size: 13px;
-      line-height: 1.55;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    .result-box.error {
-      color: oklch(0.86 0.075 25);
-    }
-
-    .quick-list {
-      display: grid;
-      gap: 8px;
-    }
-
-    .quick-link {
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      padding: 11px;
-      background: var(--surface);
-      color: var(--ink);
-      text-decoration: none;
-      display: grid;
-      gap: 2px;
-      transition: background 160ms ease, border-color 160ms ease;
-    }
-
-    .quick-link:hover {
-      background: var(--bg);
-      border-color: oklch(0.78 0.035 190);
-    }
-
-    .quick-link span {
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .log-line {
-      padding: 10px 11px;
-      border-radius: var(--radius);
-      background: var(--surface);
-      border: 1px solid var(--line);
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .hidden {
-      display: none !important;
-    }
-
-    @media (max-width: 1120px) {
-      .overview,
-      .work-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .quick-actions {
-        min-width: 0;
-      }
-    }
-
-    @media (max-width: 760px) {
-      .topbar {
-        height: auto;
-        align-items: flex-start;
-        flex-direction: column;
-        padding: 14px 16px;
-      }
-
-      .top-actions {
-        width: 100%;
-      }
-
-      .top-actions .btn,
-      .top-actions .status-pill {
-        flex: 1;
-      }
-
-      .shell {
-        padding: 16px;
-      }
-
-      .section-head {
-        align-items: flex-start;
-        flex-direction: column;
-      }
-
-      .panel-actions,
-      .inline-actions {
-        width: 100%;
-      }
-
-      .panel-actions .btn,
-      .inline-actions .btn {
-        flex: 1;
-      }
-
-      .account-strip {
-        grid-auto-columns: minmax(222px, 86vw);
-      }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      *,
-      *::before,
-      *::after {
-        scroll-behavior: auto !important;
-        transition-duration: 1ms !important;
-        animation-duration: 1ms !important;
-      }
-    }
-  </style>
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/console.css">
+  <script src="/static/js/theme.js"></script>
 </head>
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <div class="mark" aria-hidden="true">Y</div>
-        <div>
-          <h1 class="brand-title">YYB Go 控制台</h1>
-          <div class="brand-subtitle">账号、扫码、能力调用集中操作</div>
-        </div>
+  <a class="skip-link" href="#viewport">跳到主内容</a>
+
+  <div class="console">
+    <div class="sidebar-scrim hidden" id="sidebarScrim"></div>
+
+    <aside class="sidebar" id="sidebar" aria-label="主导航">
+      <div class="sidebar-brand">
+        <span class="mark" aria-hidden="true">Y</span>
+        <span class="sidebar-brand-text">
+          <span class="sidebar-brand-title">YYB Go</span>
+          <span class="sidebar-brand-sub">控制台</span>
+        </span>
+        <button class="btn ghost icon-btn sidebar-close" id="sidebarCloseBtn" type="button" aria-label="关闭导航">
+          <span aria-hidden="true">×</span>
+        </button>
       </div>
-      <div class="top-actions">
-        <span class="status-pill" id="healthPill"><span class="status-dot"></span><span>检测服务中</span></span>
-        <a class="btn secondary" href="/docs/index.html">Swagger</a>
-        <a class="btn primary" href="/scan">扫码添加</a>
+
+      <nav class="sidebar-nav" id="sidebarNav">
+        <span class="nav-group-label">工作台</span>
+        <a class="nav-item" href="#overview" data-view="overview">
+          <span class="nav-glyph" aria-hidden="true">▤</span>
+          <span>总览</span>
+        </a>
+        <a class="nav-item" href="#accounts" data-view="accounts">
+          <span class="nav-glyph" aria-hidden="true">☰</span>
+          <span>账号管理</span>
+          <span class="nav-count tnum" id="navAccountCount">0</span>
+        </a>
+        <a class="nav-item" href="#call" data-view="call">
+          <span class="nav-glyph" aria-hidden="true">▷</span>
+          <span>能力调用</span>
+        </a>
+        <span class="nav-group-label">其他</span>
+        <a class="nav-item" href="#system" data-view="system">
+          <span class="nav-glyph" aria-hidden="true">⚙</span>
+          <span>系统</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <span class="status-pill" id="healthPill">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="healthText">检测服务中…</span>
+        </span>
       </div>
-    </header>
+    </aside>
 
-    <main class="shell">
-      <section class="overview" aria-label="控制台概览">
-        <div class="summary">
-          <h2>选择账号，执行服务调用</h2>
-          <p class="summary-copy">首页现在聚焦运行工作流。接口详情保留在 Swagger，当前页面只放账号状态、调用配置和返回结果。</p>
-          <div class="stat-row" aria-label="运行统计">
-            <span class="stat-chip">账号 <strong id="accountCount">0</strong></span>
-            <span class="stat-chip">可用 <strong id="aliveCount">0</strong></span>
-            <span class="stat-chip">能力 <strong id="featureCount">0</strong></span>
-            <span class="stat-chip">当前 <strong id="currentAccountText">未选择</strong></span>
+    <div class="main-col">
+      <header class="topbar">
+        <button class="btn ghost icon-btn nav-toggle" id="sidebarOpenBtn" type="button"
+                aria-label="打开导航" aria-expanded="false" aria-controls="sidebar">
+          <span aria-hidden="true">☰</span>
+        </button>
+
+        <div class="topbar-heading">
+          <h1 id="viewTitle">总览</h1>
+          <p id="viewSubtitle">账号状态与常用维护动作</p>
+        </div>
+
+        <div class="top-actions">
+          <button class="theme-btn" id="themeBtn" type="button" aria-label="切换主题">
+            <span class="theme-glyph" aria-hidden="true">◐</span>
+          </button>
+          <a class="btn secondary hide-sm" href="/docs/index.html" target="_blank" rel="noopener">
+            <span class="btn-icon" aria-hidden="true">↗</span> API 文档
+          </a>
+          <a class="btn primary" href="/scan"><span class="btn-icon" aria-hidden="true">＋</span> 添加账号</a>
+          <div class="user-menu" id="userMenu">
+            <button class="user-menu-btn" id="userMenuBtn" type="button" aria-haspopup="true" aria-expanded="false">
+              <span class="user-avatar" id="userAvatar" aria-hidden="true">A</span>
+              <span id="userName">admin</span>
+            </button>
+            <div class="user-menu-pop hidden" id="userMenuPop" role="menu">
+              <div class="menu-header">
+                <div class="menu-name" id="menuUserName">admin</div>
+                <div class="menu-role">管理员</div>
+              </div>
+              <button class="menu-item" type="button" id="changePwdBtn" role="menuitem">修改密码</button>
+              <button class="menu-item danger" type="button" id="logoutBtn" role="menuitem">退出登录</button>
+            </div>
           </div>
         </div>
-        <aside class="quick-actions" aria-label="常用动作">
-          <p>常用入口放在这里，避免把接口文档铺满首页。</p>
-          <div class="inline-actions">
-            <button class="btn" id="refreshAllBtn" type="button">刷新存活</button>
-            <button class="btn" id="resyncAllBtn" type="button">同步资料</button>
-          </div>
-        </aside>
-      </section>
+      </header>
 
-      <section class="account-band" aria-label="账号队列">
-        <div class="section-head">
-          <div class="section-title">
-            <h3>账号队列</h3>
-            <p>点击账号后，下方调用面板会使用该账号</p>
+      <main class="viewport" id="viewport">
+        <section class="view" id="view-overview" data-view="overview">
+          <div class="stat-grid">
+            <div class="stat-card">
+              <span class="stat-label">账号总数</span>
+              <strong class="stat-value tnum" id="accountCount">0</strong>
+              <span class="stat-hint">已接入的 QQ 账号</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">可用账号</span>
+              <strong class="stat-value tnum" id="aliveCount">0</strong>
+              <span class="stat-hint">凭证有效，可直接调用</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">可调用能力</span>
+              <strong class="stat-value tnum" id="featureCount">0</strong>
+              <span class="stat-hint">wxapp 接口数量</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">当前账号</span>
+              <strong class="stat-value stat-value-text" id="currentAccountText">未选择</strong>
+              <span class="stat-hint">能力调用使用的账号</span>
+            </div>
           </div>
-          <div class="panel-actions">
-            <button class="btn secondary" id="reloadAccountsBtn" type="button">重新加载</button>
-            <a class="btn primary" href="/scan">添加账号</a>
-          </div>
-        </div>
-        <div class="account-strip" id="accountStrip">
-          <div class="empty-state">账号加载中</div>
-        </div>
-      </section>
 
-      <section class="work-grid" aria-label="调用工作区">
-        <section class="panel" aria-label="调用配置">
-          <div class="section-head">
-            <div class="section-title">
-              <h3>调用配置</h3>
-              <p>配置目标小程序和能力参数</p>
-            </div>
-          </div>
-          <div class="panel-body">
-            <div class="selected-account">
-              <span>当前账号</span>
-              <strong id="selectedAccountName">未选择</strong>
-            </div>
-            <div class="form-grid">
-              <div class="field">
-                <label for="featureSel">能力</label>
-                <select class="select" id="featureSel"></select>
+          <div class="overview-grid">
+            <section class="panel">
+              <div class="section-head">
+                <h2 class="section-title">状态分布</h2>
+                <span class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>实时</span>
               </div>
-              <div class="field">
-                <label for="appidInput">APPID</label>
-                <input class="input" id="appidInput" value="wx141bfb9b73c970a9" autocomplete="off" spellcheck="false">
+              <div class="panel-body">
+                <div class="dist-bar" id="distBar" role="img" aria-label="账号状态分布">
+                  <span class="dist-seg alive" id="distAlive"></span>
+                  <span class="dist-seg expired" id="distExpired"></span>
+                  <span class="dist-seg unknown" id="distUnknown"></span>
+                </div>
+                <ul class="dist-legend" id="distLegend" aria-live="polite">
+                  <li><span class="dist-key alive" aria-hidden="true"></span>可用<b class="tnum" id="legendAlive">0</b></li>
+                  <li><span class="dist-key expired" aria-hidden="true"></span>需重扫<b class="tnum" id="legendExpired">0</b></li>
+                  <li><span class="dist-key unknown" aria-hidden="true"></span>待确认<b class="tnum" id="legendUnknown">0</b></li>
+                </ul>
               </div>
-              <div class="field hidden" id="payloadGroup">
-                <label for="payloadInput">请求 JSON</label>
-                <textarea class="textarea" id="payloadInput" spellcheck="false">{"api_name":"getUserInfo","data":{},"env":1}</textarea>
+            </section>
+
+            <section class="panel">
+              <div class="section-head">
+                <h2 class="section-title">快捷维护</h2>
               </div>
-            </div>
-            <div class="inline-actions">
-              <button class="btn primary" id="callBtn" type="button">执行调用</button>
-              <button class="btn secondary" id="clearResultBtn" type="button">清空结果</button>
-            </div>
+              <div class="panel-body">
+                <p class="panel-note">批量操作会对全部账号生效，结果可在「能力调用」视图查看。</p>
+                <div class="inline-actions">
+                  <button class="btn secondary" id="refreshAllBtn" type="button">
+                    <span class="btn-icon" aria-hidden="true">↻</span> 刷新存活
+                  </button>
+                  <button class="btn secondary" id="resyncAllBtn" type="button">
+                    <span class="btn-icon" aria-hidden="true">⇄</span> 同步资料
+                  </button>
+                </div>
+              </div>
+            </section>
           </div>
         </section>
 
-        <section class="panel result-panel" aria-label="调用结果">
-          <div class="section-head">
-            <div class="section-title">
-              <h3>返回结果</h3>
-              <p id="resultMeta">等待调用</p>
+        <section class="view hidden" id="view-accounts" data-view="accounts">
+          <section class="panel">
+            <div class="section-head">
+              <h2 class="section-title">账号列表</h2>
+              <div class="inline-actions">
+                <button class="btn secondary sm" id="reloadAccountsBtn" type="button">
+                  <span class="btn-icon" aria-hidden="true">↻</span> 重新加载
+                </button>
+              </div>
             </div>
-            <button class="btn secondary" id="copyResultBtn" type="button">复制</button>
-          </div>
-          <div class="panel-body">
-            <pre class="result-box" id="resultBox">选择账号并执行调用后，返回内容会显示在这里。</pre>
+            <div class="panel-body">
+              <div class="account-toolbar">
+                <div class="field">
+                  <label for="accountSearch">搜索账号</label>
+                  <input class="input" id="accountSearch" type="search" placeholder="昵称 / 别名 / OpenID / UIN">
+                </div>
+                <div class="field">
+                  <label for="statusFilter">状态筛选</label>
+                  <select class="select" id="statusFilter">
+                    <option value="all">全部状态</option>
+                    <option value="alive">可用</option>
+                    <option value="expired">需重扫</option>
+                    <option value="unknown">待确认</option>
+                  </select>
+                </div>
+              </div>
+              <div class="account-grid" id="accountGrid" aria-live="polite"></div>
+            </div>
+          </section>
+        </section>
+
+        <section class="view hidden" id="view-call" data-view="call">
+          <div class="call-grid">
+            <section class="panel">
+              <div class="section-head">
+                <h2 class="section-title">调用配置</h2>
+              </div>
+              <div class="panel-body">
+                <div class="selected-account">
+                  <span class="stat-label">当前账号</span>
+                  <strong id="selectedAccountName">未选择</strong>
+                </div>
+                <div class="field">
+                  <label for="featureSel">能力</label>
+                  <select class="select" id="featureSel"></select>
+                </div>
+                <div class="field">
+                  <label for="appidInput">APPID</label>
+                  <input class="input" id="appidInput" type="text" placeholder="wx…" autocomplete="off">
+                </div>
+                <div class="field hidden" id="payloadGroup">
+                  <label for="payloadInput">请求 JSON</label>
+                  <textarea class="textarea" id="payloadInput" rows="6" placeholder='{"key":"value"}'></textarea>
+                </div>
+                <div class="inline-actions">
+                  <button class="btn primary" id="callBtn" type="button">
+                    <span class="btn-icon" aria-hidden="true">▷</span> 发起调用
+                  </button>
+                  <button class="btn ghost" id="clearResultBtn" type="button">清空结果</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="section-head">
+                <h2 class="section-title">调用结果</h2>
+                <div class="inline-actions">
+                  <span class="eyebrow" id="resultMeta">等待调用</span>
+                  <button class="btn secondary sm" id="copyResultBtn" type="button">复制</button>
+                </div>
+              </div>
+              <div class="panel-body">
+                <pre class="code-block result-box" id="resultBox" aria-live="polite">尚未发起调用。</pre>
+              </div>
+            </section>
           </div>
         </section>
 
-        <aside class="panel" aria-label="系统入口">
-          <div class="section-head">
-            <div class="section-title">
-              <h3>系统入口</h3>
-              <p>文档、接口和状态</p>
+        <section class="view hidden" id="view-system" data-view="system">
+          <section class="panel">
+            <div class="section-head">
+              <h2 class="section-title">常用入口</h2>
             </div>
-          </div>
-          <div class="panel-body">
-            <div class="quick-list">
-              <a class="quick-link" href="/docs/index.html">
-                Swagger 文档
-                <span>浏览完整 OpenAPI 接口</span>
-              </a>
-              <a class="quick-link" href="/openapi.json">
-                OpenAPI JSON
-                <span>用于接口工具导入</span>
-              </a>
-              <a class="quick-link" href="/scan">
-                扫码页面
-                <span>添加新的微信账号</span>
-              </a>
+            <div class="panel-body">
+              <ul class="quick-list">
+                <li>
+                  <a class="quick-link" href="/docs/index.html" target="_blank" rel="noopener">
+                    <span class="quick-glyph" aria-hidden="true">↗</span>
+                    <span class="quick-main">
+                      <strong>API 文档</strong>
+                      <span>Swagger UI，查看全部接口与模型</span>
+                    </span>
+                  </a>
+                </li>
+                <li>
+                  <a class="quick-link" href="/scan">
+                    <span class="quick-glyph" aria-hidden="true">＋</span>
+                    <span class="quick-main">
+                      <strong>扫码添加账号</strong>
+                      <span>使用手机 QQ 扫码授权新账号</span>
+                    </span>
+                  </a>
+                </li>
+                <li>
+                  <a class="quick-link" href="/openapi.json" target="_blank" rel="noopener">
+                    <span class="quick-glyph" aria-hidden="true">⌗</span>
+                    <span class="quick-main">
+                      <strong>OpenAPI 描述</strong>
+                      <span>原始 openapi.json 文件</span>
+                    </span>
+                  </a>
+                </li>
+              </ul>
             </div>
-            <div class="log-line" id="activityLine">尚未执行操作</div>
-          </div>
-        </aside>
-      </section>
-    </main>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <h2 class="section-title">最近活动</h2>
+            </div>
+            <div class="panel-body">
+              <p class="log-line" id="activityLine" aria-live="polite">等待操作…</p>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
   </div>
 
-  <script>
-    const state = {
-      accounts: [],
-      features: [
-        { name: "getCode" },
-        { name: "getPhoneNumber" },
-        { name: "operateWxData" }
-      ],
-      selectedOpenID: "",
-      lastResult: ""
-    };
+  <div class="drawer-overlay hidden" id="detailOverlay"></div>
+  <aside class="drawer hidden" id="detailDrawer" aria-label="账号详情" role="dialog" aria-modal="true">
+    <div class="drawer-head">
+      <h3 id="drawerTitle">账号详情</h3>
+      <button class="btn ghost icon-btn" id="drawerCloseBtn" type="button" aria-label="关闭详情">
+        <span aria-hidden="true">×</span>
+      </button>
+    </div>
+    <div class="drawer-body">
+      <div class="drawer-profile">
+        <span class="avatar avatar-lg" id="drawerAvatar" aria-hidden="true"></span>
+        <div class="drawer-profile-main">
+          <strong id="drawerNickname"></strong>
+          <span class="badge" id="drawerStatusBadge"></span>
+        </div>
+      </div>
+      <div>
+        <h4 class="drawer-section-title">基础信息</h4>
+        <dl class="kv-grid" id="drawerBaseInfo"></dl>
+      </div>
+      <div>
+        <h4 class="drawer-section-title">用户资料 (user_info)</h4>
+        <pre class="code-block" id="drawerUserInfo">—</pre>
+      </div>
+      <div class="drawer-actions-row">
+        <button class="btn secondary" id="drawerRefreshBtn" type="button">刷新存活</button>
+        <button class="btn secondary" id="drawerResyncBtn" type="button">同步资料</button>
+        <button class="btn danger" id="drawerDeleteBtn" type="button">删除账号</button>
+      </div>
+    </div>
+  </aside>
 
-    const $ = id => document.getElementById(id);
-
-    function escapeHTML(value) {
-      return String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-    }
-
-    async function api(method, url, body) {
-      const options = { method, headers: { "Content-Type": "application/json" } };
-      if (body !== undefined) options.body = JSON.stringify(body);
-      const response = await fetch(url, options);
-      const text = await response.text();
-      let data = null;
-      try {
-        data = text ? JSON.parse(text) : null;
-      } catch {
-        data = text;
-      }
-      const isEnvelope = data && typeof data === "object" && !Array.isArray(data)
-        && Object.prototype.hasOwnProperty.call(data, "code")
-        && Object.prototype.hasOwnProperty.call(data, "msg")
-        && Object.prototype.hasOwnProperty.call(data, "data");
-      if (!response.ok || (isEnvelope && data.code !== 0)) {
-        const error = new Error(isEnvelope ? data.msg : "HTTP " + response.status);
-        error.status = response.status;
-        error.code = isEnvelope ? data.code : response.status;
-        error.data = isEnvelope ? data.data : data;
-        error.payload = data;
-        throw error;
-      }
-      return isEnvelope ? data.data : data;
-    }
-
-    function accountName(account) {
-      return account.nickname || account.alias || account.openid || "未命名账号";
-    }
-
-    function statusText(status) {
-      if (status === "alive") return "可用";
-      if (status === "expired") return "需重扫";
-      return "待确认";
-    }
-
-    function statusClass(status) {
-      if (status === "alive") return "alive";
-      if (status === "expired") return "expired";
-      return "unknown";
-    }
-
-    function formatChecked(ts) {
-      if (!ts) return "未检测";
-      const date = new Date(ts * 1000);
-      const pad = n => String(n).padStart(2, "0");
-      return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-    }
-
-    function setActivity(message) {
-      $("activityLine").textContent = message;
-    }
-
-    function setResult(value, meta, isError) {
-      const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-      state.lastResult = text;
-      $("resultBox").textContent = text;
-      $("resultBox").classList.toggle("error", Boolean(isError));
-      $("resultMeta").textContent = meta || "已更新";
-    }
-
-    function selectedAccount() {
-      return state.accounts.find(item => item.openid === state.selectedOpenID) || null;
-    }
-
-    function syncSelectedAccount() {
-      const selected = selectedAccount();
-      const label = selected ? accountName(selected) : "未选择";
-      $("selectedAccountName").textContent = label;
-      $("currentAccountText").textContent = label;
-      document.querySelectorAll(".account-card").forEach(card => {
-        card.classList.toggle("selected", card.dataset.openid === state.selectedOpenID);
-      });
-    }
-
-    function renderStats() {
-      $("accountCount").textContent = String(state.accounts.length);
-      $("aliveCount").textContent = String(state.accounts.filter(item => item.status === "alive").length);
-      $("featureCount").textContent = String(state.features.length);
-      syncSelectedAccount();
-    }
-
-    function renderAccounts() {
-      const strip = $("accountStrip");
-      if (!state.accounts.length) {
-        strip.innerHTML = `<div class="empty-state">暂无账号，点击“添加账号”开始扫码。</div>`;
-        state.selectedOpenID = "";
-        renderStats();
-        return;
-      }
-
-      if (!state.accounts.some(item => item.openid === state.selectedOpenID)) {
-        state.selectedOpenID = state.accounts[0].openid;
-      }
-
-      strip.innerHTML = "";
-      for (const account of state.accounts) {
-        const name = accountName(account);
-        const cls = statusClass(account.status);
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "account-card";
-        button.dataset.openid = account.openid;
-        button.innerHTML = `
-          <span class="avatar">
-            <img alt="" src="/accounts/avatar?ref=${encodeURIComponent(account.openid)}">
-            <span class="avatar-letter hidden">${escapeHTML(name.slice(0, 1).toUpperCase() || "Y")}</span>
-          </span>
-          <span class="account-main">
-            <span class="account-name">${escapeHTML(name)}</span>
-            <span class="account-status ${cls}"><span class="status-dot"></span>${statusText(account.status)}</span>
-            <span class="account-meta">uin: ${escapeHTML(account.uin ?? "-")} · ${formatChecked(account.last_checked_at)}</span>
-          </span>
-        `;
-        button.querySelector("img").addEventListener("error", event => {
-          event.currentTarget.classList.add("hidden");
-          button.querySelector(".avatar-letter").classList.remove("hidden");
-        });
-        button.addEventListener("click", () => {
-          state.selectedOpenID = account.openid;
-          syncSelectedAccount();
-          setActivity(`已选择账号：${name}`);
-        });
-        strip.appendChild(button);
-      }
-      renderStats();
-    }
-
-    function renderFeatures() {
-      const select = $("featureSel");
-      if (!state.features.length) {
-        select.innerHTML = `<option value="">暂无能力</option>`;
-        togglePayload();
-        return;
-      }
-      select.innerHTML = state.features.map(feature => {
-        return `<option value="${escapeHTML(feature.name)}" data-name="${escapeHTML(feature.name)}">${escapeHTML(feature.name)}</option>`;
-      }).join("");
-      togglePayload();
-      renderStats();
-    }
-
-    function currentFeatureName() {
-      const option = $("featureSel").selectedOptions[0];
-      return option ? option.dataset.name || "" : "";
-    }
-
-    function togglePayload() {
-      const needsPayload = currentFeatureName().toLowerCase() === "operatewxdata";
-      $("payloadGroup").classList.toggle("hidden", !needsPayload);
-    }
-
-    async function loadHealth() {
-      const pill = $("healthPill");
-      try {
-        await api("GET", "/health");
-        pill.classList.add("ok");
-        pill.classList.remove("bad");
-        pill.querySelector("span:last-child").textContent = "服务正常";
-      } catch {
-        pill.classList.add("bad");
-        pill.classList.remove("ok");
-        pill.querySelector("span:last-child").textContent = "服务异常";
-      }
-    }
-
-    async function loadAccounts() {
-      $("accountStrip").innerHTML = `<div class="empty-state">账号加载中</div>`;
-      try {
-        state.accounts = await api("GET", "/accounts");
-        renderAccounts();
-        setActivity("账号列表已加载");
-      } catch (error) {
-        $("accountStrip").innerHTML = `<div class="empty-state">账号加载失败：${escapeHTML(error.data?.detail || error.message)}</div>`;
-        setActivity("账号列表加载失败");
-      }
-    }
-
-    async function loadFeatures() {
-      renderFeatures();
-    }
-
-    async function refreshAll() {
-      const button = $("refreshAllBtn");
-      button.disabled = true;
-      button.textContent = "刷新中";
-      try {
-        const result = await api("POST", "/accounts/refresh");
-        setResult(result, "存活刷新完成", false);
-        await loadAccounts();
-      } catch (error) {
-        setResult(error.data || error.message, "存活刷新失败", true);
-      } finally {
-        button.disabled = false;
-        button.textContent = "刷新存活";
-      }
-    }
-
-    async function resyncAll() {
-      const button = $("resyncAllBtn");
-      button.disabled = true;
-      button.textContent = "同步中";
-      try {
-        const result = await api("POST", "/accounts/resync");
-        setResult(result, "资料同步完成", false);
-        await loadAccounts();
-      } catch (error) {
-        setResult(error.data || error.message, "资料同步失败", true);
-      } finally {
-        button.disabled = false;
-        button.textContent = "同步资料";
-      }
-    }
-
-    async function callFeature() {
-      const account = selectedAccount();
-      if (!account) {
-        setResult("请先选择一个账号。", "缺少账号", true);
-        return;
-      }
-
-      const endpoint = currentFeatureName();
-      const appID = $("appidInput").value.trim();
-      if (!endpoint) {
-        setResult("当前没有可调用能力。", "缺少能力", true);
-        return;
-      }
-      if (!appID) {
-        setResult("请输入 APPID。", "缺少 APPID", true);
-        return;
-      }
-
-      const body = { ref: account.openid, app_id: appID };
-      if (endpoint.toLowerCase() === "operatewxdata") {
-        const raw = $("payloadInput").value.trim();
-        if (!raw) {
-          setResult("operateWxData 需要请求 JSON。", "缺少 payload", true);
-          return;
-        }
-        try {
-          body.payload = JSON.parse(raw);
-        } catch {
-          setResult("请求 JSON 格式不正确。", "JSON 解析失败", true);
-          return;
-        }
-      }
-
-      const button = $("callBtn");
-      button.disabled = true;
-      const startedAt = performance.now();
-      setResult("调用中，首次调用可能需要建立会话。", "请求进行中", false);
-      setActivity(`正在调用 ${endpoint}：${accountName(account)}`);
-
-      try {
-        const result = await api("POST", `/wxapp/${endpoint}`, body);
-        const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
-        setResult(result, `调用完成，用时 ${seconds}s`, false);
-        await loadAccounts();
-      } catch (error) {
-        setResult(error.data || error.message, `调用失败 ${error.status || ""}`.trim(), true);
-      } finally {
-        button.disabled = false;
-      }
-    }
-
-    $("reloadAccountsBtn").addEventListener("click", loadAccounts);
-    $("refreshAllBtn").addEventListener("click", refreshAll);
-    $("resyncAllBtn").addEventListener("click", resyncAll);
-    $("featureSel").addEventListener("change", togglePayload);
-    $("callBtn").addEventListener("click", callFeature);
-    $("clearResultBtn").addEventListener("click", () => setResult("结果已清空。", "等待调用", false));
-    $("copyResultBtn").addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(state.lastResult || $("resultBox").textContent);
-        setActivity("结果已复制");
-      } catch {
-        setActivity("复制失败，请手动选择结果内容");
-      }
-    });
-
-    loadHealth();
-    loadFeatures();
-    loadAccounts();
-    setInterval(loadHealth, 15000);
-  </script>
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/console.js"></script>
 </body>
 </html>

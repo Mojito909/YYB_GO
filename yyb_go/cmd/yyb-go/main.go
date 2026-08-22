@@ -32,6 +32,7 @@ func main() {
 		AvatarTimeout:  10 * time.Second,
 		ScanTimeout:    180 * time.Second,
 		QRSessionTTL:   5 * time.Minute,
+		AuthTTL:        24 * time.Hour,
 	}
 
 	app, err := httpapi.NewApp(cfg)

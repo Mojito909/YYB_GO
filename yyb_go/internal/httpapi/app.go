@@ -31,6 +31,7 @@ type Config struct {
 	AvatarTimeout  time.Duration
 	ScanTimeout    time.Duration
 	QRSessionTTL   time.Duration
+	AuthTTL        time.Duration
 }
 
 type App struct {
@@ -39,6 +40,7 @@ type App struct {
 	db        *store.DB
 	pool      *protocol.Pool
 	qr        *qr.Client
+	auth      *authManager
 
 	mu         sync.Mutex
 	qrSessions map[string]*qr.Session
@@ -70,6 +72,9 @@ func NewApp(cfg Config) (*App, error) {
 	if cfg.QRSessionTTL == 0 {
 		cfg.QRSessionTTL = 5 * time.Minute
 	}
+	if cfg.AuthTTL == 0 {
+		cfg.AuthTTL = 24 * time.Hour
+	}
 	res, err := ensureResources(cfg.ResourceRoot)
 	if err != nil {
 		return nil, err
@@ -80,6 +85,11 @@ func NewApp(cfg Config) (*App, error) {
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
+		return nil, err
+	}
+	auth := newAuthManager(db, cfg.AuthTTL)
+	if err := auth.bootstrap(context.Background()); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	poolCfg := protocol.DefaultConfig()
@@ -93,11 +103,22 @@ func NewApp(cfg Config) (*App, error) {
 		db:         db,
 		pool:       pool,
 		qr:         qr.NewClient(cfg.RequestTimeout),
+		auth:       auth,
 		qrSessions: map[string]*qr.Session{},
 	}, nil
 }
 
 func (a *App) Close() error {
+	a.mu.Lock()
+	sessions := make([]*qr.Session, 0, len(a.qrSessions))
+	for _, sess := range a.qrSessions {
+		sessions = append(sessions, sess)
+	}
+	a.qrSessions = map[string]*qr.Session{}
+	a.mu.Unlock()
+	for _, sess := range sessions {
+		sess.StopWatch()
+	}
 	if a.db != nil {
 		return a.db.Close()
 	}
@@ -112,31 +133,56 @@ func (a *App) Handler() http.Handler {
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
 
-	router.Any("/", gin.WrapF(a.handleIndex))
-	router.Any("/scan", gin.WrapF(a.handleScan))
-	router.Any("/docs", func(c *gin.Context) {
-		c.Redirect(http.StatusMovedPermanently, "/docs/index.html")
-	})
-	router.Any("/docs/*path", gin.WrapF(a.handleDocs))
-	router.Any("/openapi.json", gin.WrapF(a.handleOpenAPI))
+	// 公开路由：登录页、鉴权接口、健康检查、静态资源
+	router.Any("/login", gin.WrapF(a.handleLoginPage))
+	router.Any("/auth/login", gin.WrapF(a.auth.handleLogin))
+	router.Any("/auth/logout", gin.WrapF(a.auth.handleLogout))
+	router.Any("/auth/me", gin.WrapF(a.auth.handleMe))
+	router.Any("/auth/password", gin.WrapF(a.auth.handleChangePassword))
 	router.Any("/health", func(c *gin.Context) {
 		writeJSON(c.Writer, http.StatusOK, gin.H{"ok": true})
 	})
 	router.StaticFS("/static", http.Dir(a.resources.Static))
-	router.Any("/qr", gin.WrapF(a.handleQRRoot))
-	router.Any("/qr/*path", gin.WrapF(a.handleQR))
-	router.Any("/accounts", gin.WrapF(a.handleAccountsRoot))
-	router.Any("/accounts/avatar", gin.WrapF(a.handleAccountAvatar))
-	router.Any("/accounts/refresh", gin.WrapF(a.handleAccountRefresh))
-	router.Any("/accounts/resync", gin.WrapF(a.handleAccountResync))
-	router.Any("/wxapp/getCode", gin.WrapF(a.handleGetCode))
-	router.Any("/wxapp/getPhoneNumber", gin.WrapF(a.handleGetPhoneNumber))
-	router.Any("/wxapp/operateWxData", gin.WrapF(a.handleOperateWXData))
+
+	// 受保护路由：页面与全部业务 API
+	protected := router.Group("/", a.auth.ginMiddleware())
+	protected.Any("/", gin.WrapF(a.handleIndex))
+	protected.Any("/scan", gin.WrapF(a.handleScan))
+	protected.Any("/docs", func(c *gin.Context) {
+		c.Redirect(http.StatusMovedPermanently, "/docs/index.html")
+	})
+	protected.Any("/docs/*path", gin.WrapF(a.handleDocs))
+	protected.Any("/openapi.json", gin.WrapF(a.handleOpenAPI))
+	protected.Any("/qr", gin.WrapF(a.handleQRRoot))
+	protected.Any("/qr/*path", gin.WrapF(a.handleQR))
+	protected.Any("/accounts", gin.WrapF(a.handleAccountsRoot))
+	protected.Any("/accounts/avatar", gin.WrapF(a.handleAccountAvatar))
+	protected.Any("/accounts/refresh", gin.WrapF(a.handleAccountRefresh))
+	protected.Any("/accounts/resync", gin.WrapF(a.handleAccountResync))
+	protected.Any("/wxapp/getCode", gin.WrapF(a.handleGetCode))
+	protected.Any("/wxapp/getPhoneNumber", gin.WrapF(a.handleGetPhoneNumber))
+	protected.Any("/wxapp/operateWxData", gin.WrapF(a.handleOperateWXData))
 	router.NoRoute(func(c *gin.Context) {
 		writeError(c.Writer, http.StatusNotFound, "not found")
 	})
 
 	return router
+}
+
+func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/login" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if _, ok := a.auth.currentUsername(r); ok {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	serveFileOrText(w, r, filepath.Join(a.resources.Templates, "login.html"), fallbackLoginHTML)
 }
 
 func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -203,13 +249,16 @@ func (a *App) handleQRRoot(w http.ResponseWriter, r *http.Request) {
 		keep[sid] = true
 	}
 	a.mu.Unlock()
+	// 后台持续代理微信长轮询，/qr/{id}/poll 只读缓存状态，避免请求被挂住 25s+
+	a.qr.StartWatch(img.Session)
 	path := a.resources.qrPath(img.Session.ID)
 	_ = os.WriteFile(path, img.ImageBytes, 0o644)
 	a.cleanupQR(keep)
 	out := map[string]any{
 		"session_id": img.Session.ID,
-		"status":     img.Session.Status,
-		"image_url":  "/qr/" + img.Session.ID + "/image",
+		// watcher 已在并发写状态，必须通过快照读取
+		"status":    img.Session.Snapshot().Status,
+		"image_url": "/qr/" + img.Session.ID + "/image",
 	}
 	if r.URL.Query().Get("as_base64") == "true" {
 		out["image_base64"] = qr.DataURIJPEG(img.ImageBytes)
@@ -249,11 +298,8 @@ func (a *App) handleQR(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "qr session not found")
 			return
 		}
-		result, err := a.qr.PollQRCode(r.Context(), sess)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, err.Error())
-			return
-		}
+		// 读后台 watcher 维护的状态快照，毫秒级返回
+		result := sess.Snapshot()
 		if terminalQR(result.Status) {
 			a.dropQRSession(sessionID)
 		}
@@ -704,23 +750,32 @@ func (a *App) getQRSession(id string) *qr.Session {
 
 func (a *App) dropQRSession(id string) {
 	a.mu.Lock()
+	sess := a.qrSessions[id]
 	delete(a.qrSessions, id)
 	a.mu.Unlock()
+	if sess != nil {
+		sess.StopWatch()
+	}
 	_ = os.Remove(a.resources.qrPath(id))
 }
 
 func (a *App) pruneQR() {
 	a.mu.Lock()
 	var drop []string
+	var stale []*qr.Session
 	for sid, sess := range a.qrSessions {
 		if sess.Age() > a.cfg.QRSessionTTL {
 			drop = append(drop, sid)
+			stale = append(stale, sess)
 		}
 	}
 	for _, sid := range drop {
 		delete(a.qrSessions, sid)
 	}
 	a.mu.Unlock()
+	for _, sess := range stale {
+		sess.StopWatch()
+	}
 	for _, sid := range drop {
 		_ = os.Remove(a.resources.qrPath(sid))
 	}

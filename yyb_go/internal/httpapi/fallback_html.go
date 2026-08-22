@@ -62,12 +62,34 @@ async function poll(){
 newQR();
 </script></body></html>`
 
-const docsHTML = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>YYB Go API 文档</title>
-<body style="margin:32px;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;line-height:1.6">
-<h1>YYB Go API</h1>
-<p>Swagger UI: <a href="/docs/index.html">/docs/index.html</a></p>
-<p>OpenAPI JSON: <a href="/openapi.json">/openapi.json</a></p>
-</body></html>`
+const fallbackLoginHTML = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · YYB Go</title>
+<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:oklch(0.974 0.004 250);color:oklch(0.19 0.025 252);font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif">
+<main style="width:min(380px,calc(100vw - 32px));background:oklch(1 0 0);border:1px solid oklch(0.885 0.012 250);border-radius:8px;padding:28px">
+<h1 style="margin:0 0 6px;font-size:22px">YYB Go 登录</h1>
+<p style="margin:0 0 18px;color:oklch(0.43 0.025 252);font-size:13px">请输入管理员账号密码</p>
+<form onsubmit="return doLogin(event)">
+<label style="display:block;margin-bottom:12px;font-size:13px">用户名
+<input id="u" name="username" autocomplete="username" required style="width:100%;margin-top:4px;padding:10px;border:1px solid oklch(0.885 0.012 250);border-radius:8px;box-sizing:border-box">
+</label>
+<label style="display:block;margin-bottom:16px;font-size:13px">密码
+<input id="p" name="password" type="password" autocomplete="current-password" required style="width:100%;margin-top:4px;padding:10px;border:1px solid oklch(0.885 0.012 250);border-radius:8px;box-sizing:border-box">
+</label>
+<p id="err" style="display:none;margin:0 0 12px;color:oklch(0.55 0.18 25);font-size:13px"></p>
+<button type="submit" style="width:100%;border:0;border-radius:8px;padding:11px;background:oklch(0.54 0.205 3);color:oklch(1 0 0);font-size:14px;cursor:pointer">登录</button>
+</form>
+<script>
+async function doLogin(e){
+ e.preventDefault();
+ const body={username:document.getElementById('u').value,password:document.getElementById('p').value};
+ const r=await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ if(r.ok){location.href='/';return false}
+ let msg='登录失败';
+ try{const d=await r.json();if(d&&d.msg)msg=d.msg}catch(e2){}
+ const err=document.getElementById('err');
+ err.textContent=msg;err.style.display='block';
+ return false;
+}
+</script></main></body></html>`
 
 var openAPISpec = newOpenAPISpec()
