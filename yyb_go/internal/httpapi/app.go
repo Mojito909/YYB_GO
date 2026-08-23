@@ -24,6 +24,7 @@ import (
 
 type Config struct {
 	ResourceRoot   string
+	DataRoot       string
 	DBFilename     string
 	TCPProxy       string
 	SessionTTL     time.Duration
@@ -75,7 +76,7 @@ func NewApp(cfg Config) (*App, error) {
 	if cfg.AuthTTL == 0 {
 		cfg.AuthTTL = 24 * time.Hour
 	}
-	res, err := ensureResources(cfg.ResourceRoot)
+	res, err := ensureResources(cfg.ResourceRoot, cfg.DataRoot)
 	if err != nil {
 		return nil, err
 	}

@@ -69,6 +69,16 @@
 
 - 修复跨架构构建时未显式传入 `TARGETOS/TARGETARCH`，导致 ARM 镜像可能携带错误架构可执行文件的问题。
 
+#### Docker 数据卷（部署侧变更）
+
+- 新增 `-data-root` 启动参数，把运行时数据（`db`/`avatars`/`qr`）与页面资源（`static`/`templates`）分离；未指定时沿用 `-resource-root`，本地开发布局不变。
+- 镜像的数据目录改为 `/app/data`，`VOLUME` 由 `/app/resource` 收窄为 `/app/data`。原先挂载 `/app/resource` 会让命名卷覆盖镜像内的前端，导致更新镜像后控制台仍是旧页面（例如账号卡片缺少「令牌」按钮）。
+- 已有部署只需把 `-v yyb-go-data:/app/resource` 改为 `-v yyb-go-data:/app/data`，卷内 `db`/`avatars`/`qr` 布局不变，数据无需迁移。
+
+#### 控制台缓存
+
+- `/static` 下的资源返回 `Cache-Control: no-cache`，避免浏览器启发式缓存复用旧的 `console.js`/`console.css`。
+
 ### Planned
 
 #### 青龙集成

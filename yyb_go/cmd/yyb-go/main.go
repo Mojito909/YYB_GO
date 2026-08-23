@@ -18,13 +18,15 @@ import (
 func main() {
 	host := flag.String("host", "127.0.0.1", "listen host")
 	port := flag.Int("port", 8000, "listen port")
-	resourceRoot := flag.String("resource-root", filepath.Join(".", "resource"), "runtime resource directory")
-	dbFilename := flag.String("db", httpapi.DefaultDBFilename, "SQLite database filename under resource/db")
+	resourceRoot := flag.String("resource-root", filepath.Join(".", "resource"), "page resource directory (templates/static)")
+	dataRoot := flag.String("data-root", "", "runtime data directory (db/avatars/qr), defaults to -resource-root")
+	dbFilename := flag.String("db", httpapi.DefaultDBFilename, "SQLite database filename under data-root/db")
 	tcpProxy := flag.String("tcp-proxy", "", "optional TCP proxy: socks5://host:port or http-connect://host:port")
 	flag.Parse()
 
 	cfg := httpapi.Config{
 		ResourceRoot:   *resourceRoot,
+		DataRoot:       *dataRoot,
 		DBFilename:     *dbFilename,
 		TCPProxy:       *tcpProxy,
 		SessionTTL:     30 * time.Minute,

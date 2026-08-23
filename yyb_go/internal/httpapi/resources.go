@@ -7,6 +7,7 @@ import (
 
 type resources struct {
 	Root      string
+	DataRoot  string
 	DB        string
 	Avatars   string
 	QR        string
@@ -14,12 +15,18 @@ type resources struct {
 	Static    string
 }
 
-func ensureResources(root string) (resources, error) {
+// ensureResources 把只读的页面资源（templates/static）和运行时数据（db/avatars/qr）分开。
+// dataRoot 为空时退回到 root，保持本地开发的单目录布局。
+func ensureResources(root, dataRoot string) (resources, error) {
+	if dataRoot == "" {
+		dataRoot = root
+	}
 	res := resources{
 		Root:      root,
-		DB:        filepath.Join(root, "db"),
-		Avatars:   filepath.Join(root, "avatars"),
-		QR:        filepath.Join(root, "qr"),
+		DataRoot:  dataRoot,
+		DB:        filepath.Join(dataRoot, "db"),
+		Avatars:   filepath.Join(dataRoot, "avatars"),
+		QR:        filepath.Join(dataRoot, "qr"),
 		Templates: filepath.Join(root, "templates"),
 		Static:    filepath.Join(root, "static"),
 	}

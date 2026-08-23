@@ -95,12 +95,14 @@ docker run -d \
   -e YYB_ADMIN_USER=admin \
   -e YYB_ADMIN_PASSWORD='YourStrongPasswordHere' \
   -e TZ=Asia/Shanghai \
-  -v yyb-go-data:/app/resource \
+  -v yyb-go-data:/app/data \
   --restart unless-stopped \
   joey772/yyb-go:latest
 ```
 
-`/app/resource` 用于持久化数据库、账号凭证、会话和页面运行数据。
+`/app/data` 用于持久化数据库、账号头像和扫码图片；页面资源在镜像内的 `/app/resource`，随镜像更新。
+
+> 不要把卷挂到 `/app/resource`。该目录下是 `static/` 和 `templates/`，一旦被命名卷覆盖，容器会一直使用首次创建卷时的旧页面，`docker pull` 新镜像也不会生效（表现为控制台缺少新功能，例如账号卡片上的「令牌」按钮）。
 
 更新镜像：
 
@@ -114,7 +116,7 @@ docker run -d \
   -e YYB_ADMIN_USER=admin \
   -e YYB_ADMIN_PASSWORD='YourStrongPasswordHere' \
   -e TZ=Asia/Shanghai \
-  -v yyb-go-data:/app/resource \
+  -v yyb-go-data:/app/data \
   --restart unless-stopped \
   joey772/yyb-go:latest
 ```

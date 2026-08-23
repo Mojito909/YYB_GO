@@ -24,7 +24,7 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates \
     && addgroup -S yyb \
     && adduser -S -G yyb yyb \
-    && mkdir -p /app/resource \
+    && mkdir -p /app/resource /app/data \
     && chown -R yyb:yyb /app
 
 WORKDIR /app
@@ -37,10 +37,13 @@ ENV GIN_MODE=release
 
 USER yyb
 EXPOSE 8000
-VOLUME ["/app/resource"]
+
+# 只把运行时数据目录 /app/data 声明为卷。/app/resource 存放 static / templates，
+# 必须留在镜像层，否则挂载会盖住镜像里的前端资源，导致更新镜像后页面仍是旧版本。
+VOLUME ["/app/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8000/health || exit 1
 
 ENTRYPOINT ["/app/yyb-go"]
-CMD ["-host", "0.0.0.0", "-port", "8000", "-resource-root", "/app/resource"]
+CMD ["-host", "0.0.0.0", "-port", "8000", "-resource-root", "/app/resource", "-data-root", "/app/data"]
