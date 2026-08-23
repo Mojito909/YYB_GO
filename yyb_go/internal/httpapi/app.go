@@ -143,7 +143,11 @@ func (a *App) Handler() http.Handler {
 	router.Any("/health", func(c *gin.Context) {
 		writeJSON(c.Writer, http.StatusOK, gin.H{"ok": true})
 	})
-	router.StaticFS("/static", http.Dir(a.resources.Static))
+	// 静态资源禁用强缓存，避免前端改动后浏览器仍使用旧脚本
+	static := router.Group("/static", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
+	})
+	static.StaticFS("/", http.Dir(a.resources.Static))
 
 	// 受保护路由：页面与全部业务 API
 	protected := router.Group("/", a.auth.ginMiddleware())

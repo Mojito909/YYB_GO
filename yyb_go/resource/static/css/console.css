@@ -16,14 +16,15 @@
   height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
   background: var(--card);
   border-right: 1px solid var(--line);
   overscroll-behavior: contain;
 }
 
 .sidebar-brand {
-  min-height: var(--topbar-h);
+  height: var(--topbar-h);
+  min-height: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -43,7 +44,7 @@
   display: grid;
   align-content: start;
   gap: 2px;
-  padding: 12px 10px;
+  padding: 20px 10px 12px;
 }
 
 .nav-group-label {
@@ -102,11 +103,12 @@
   position: sticky;
   top: 0;
   z-index: 50;
-  min-height: var(--topbar-h);
+  height: var(--topbar-h);
+  min-height: 0;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 20px;
+  padding: 8px 20px;
   background: var(--card-glass);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
@@ -382,7 +384,7 @@
 }
 
 @media (max-width: 640px) {
-  .topbar { padding: 10px 14px; }
+  .topbar { padding: 8px 14px; }
   .viewport { padding: 14px; }
   .account-toolbar { grid-template-columns: minmax(0, 1fr); }
   .user-menu-btn > span:last-child { display: none; }
