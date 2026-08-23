@@ -122,7 +122,7 @@ func TestHandlerServesGinRoutesAndSwaggerDocs(t *testing.T) {
 	if !ok {
 		t.Fatalf("OpenAPI paths missing or invalid")
 	}
-	for _, path := range []string{"/auth/login", "/auth/logout", "/auth/me", "/auth/password", "/wxapp/getCode", "/wxapp/getPhoneNumber", "/wxapp/operateWxData", "/accounts/avatar"} {
+	for _, path := range []string{"/auth/login", "/auth/logout", "/auth/me", "/auth/password", "/auth/token", "/wxapp/getCode", "/wxapp/getPhoneNumber", "/wxapp/operateWxData", "/accounts/avatar"} {
 		if _, ok := paths[path]; !ok {
 			t.Fatalf("OpenAPI path %s missing", path)
 		}
@@ -210,6 +210,50 @@ func TestAuthLoginLogoutFlow(t *testing.T) {
 	after := authedRequest(handler, cookie, http.MethodGet, "/accounts", nil)
 	if after.Code != http.StatusUnauthorized {
 		t.Fatalf("GET /accounts after logout status = %d", after.Code)
+	}
+}
+
+func TestAPITokenFlow(t *testing.T) {
+	_, handler := newTestApp(t)
+	cookie := loginForTest(t, handler, testAdminUser, testAdminPass)
+
+	// 只有 Cookie 会话可以生成令牌。
+	created := authedRequest(handler, cookie, http.MethodPost, "/auth/token", nil)
+	if created.Code != http.StatusOK {
+		t.Fatalf("POST /auth/token status = %d, body = %s", created.Code, created.Body.String())
+	}
+	var createdBody struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &createdBody); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	if createdBody.Data.Token == "" {
+		t.Fatalf("token response missing token")
+	}
+
+	// Bearer Token 可以访问受保护 API。
+	request := httptest.NewRequest(http.MethodGet, "/accounts", nil)
+	request.Header.Set("Authorization", "Bearer "+createdBody.Data.Token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts with bearer token status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// 轮换后旧令牌立即失效。
+	rotated := authedRequest(handler, cookie, http.MethodPost, "/auth/token", nil)
+	if rotated.Code != http.StatusOK {
+		t.Fatalf("rotate API token status = %d, body = %s", rotated.Code, rotated.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/accounts", nil)
+	request.Header.Set("Authorization", "Bearer "+createdBody.Data.Token)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, request)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /accounts with revoked bearer token status = %d", rec.Code)
 	}
 }
 

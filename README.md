@@ -18,6 +18,7 @@
 - 增加账号管理和目标应用能力 HTTP API
 - 增加 SQLite 数据持久化与会话缓存
 - 增加 OpenAPI / Swagger 接口文档
+- 增加 API Bearer Token，方便青龙等脚本调用
 - 优化管理后台、登录页和扫码页的 UI 体验
 - 增加亮色 / 暗色模式、响应式布局和基础交互反馈
 - 补充青龙等任务平台的 HTTP 调用支持说明
@@ -41,6 +42,15 @@ go run ./cmd/yyb-go -host 127.0.0.1 -port 8000
 - 接口文档：http://127.0.0.1:8000/docs/index.html
 
 如果未设置 `YYB_ADMIN_PASSWORD`，首次启动会生成随机密码并输出到日志。
+
+登录后台后，可在右上角菜单生成 API 令牌。青龙调用时使用：
+
+```bash
+curl -H "Authorization: Bearer YOUR_API_TOKEN" \
+  http://127.0.0.1:8000/accounts
+```
+
+生成新令牌会使旧令牌立即失效，修改管理员密码也会撤销令牌。令牌只在生成时显示一次，请妥善保存。
 
 ## Docker
 

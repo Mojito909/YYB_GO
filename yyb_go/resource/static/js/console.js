@@ -96,6 +96,53 @@ function setupUserMenu() {
     close();
     showChangePasswordModal();
   });
+
+  $("apiTokenBtn").addEventListener("click", () => {
+    close();
+    showAPITokenModal();
+  });
+}
+
+function showAPITokenModal() {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tokenTitle">
+      <h3 id="tokenTitle">生成 API 令牌</h3>
+      <p class="modal-msg">令牌用于青龙等脚本调用接口。生成新令牌后，旧令牌会立即失效。</p>
+      <div class="field hidden" id="tokenResultField">
+        <label for="apiTokenValue">新令牌（仅显示这一次）</label>
+        <input class="input" id="apiTokenValue" readonly spellcheck="false">
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-act="cancel">关闭</button>
+        <button class="btn primary" type="button" data-act="generate">生成并显示</button>
+      </div>
+    </div>
+  `;
+  const close = () => overlay.remove();
+  overlay.querySelector('[data-act="cancel"]').addEventListener("click", close);
+  overlay.querySelector('[data-act="generate"]').addEventListener("click", async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.innerHTML = '<span class="spin" aria-hidden="true"></span> 生成中';
+    try {
+      const result = await api("POST", "/auth/token");
+      const input = overlay.querySelector("#apiTokenValue");
+      input.value = result.token || "";
+      overlay.querySelector("#tokenResultField").classList.remove("hidden");
+      button.disabled = false;
+      button.textContent = "重新生成";
+      input.focus();
+      input.select();
+      Toast.success("令牌已生成，请立即复制保存");
+    } catch (error) {
+      Toast.error("令牌生成失败：" + error.message);
+      button.disabled = false;
+      button.textContent = "生成并显示";
+    }
+  });
+  document.body.appendChild(overlay);
 }
 
 function showChangePasswordModal() {

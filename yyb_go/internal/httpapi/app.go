@@ -139,6 +139,7 @@ func (a *App) Handler() http.Handler {
 	router.Any("/auth/logout", gin.WrapF(a.auth.handleLogout))
 	router.Any("/auth/me", gin.WrapF(a.auth.handleMe))
 	router.Any("/auth/password", gin.WrapF(a.auth.handleChangePassword))
+	router.Any("/auth/token", gin.WrapF(a.auth.handleToken))
 	router.Any("/health", func(c *gin.Context) {
 		writeJSON(c.Writer, http.StatusOK, gin.H{"ok": true})
 	})

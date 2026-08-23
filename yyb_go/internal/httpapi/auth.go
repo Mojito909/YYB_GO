@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -208,9 +209,66 @@ func (m *authManager) handleChangePassword(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := m.db.RevokeAPITokens(r.Context(), username); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	// 改密后销毁其他会话，仅保留当前会话
 	m.destroySessionsExceptCurrent(r)
 	writeJSON(w, http.StatusOK, map[string]any{"password_changed": true})
+}
+
+// handleToken 生成、查看和撤销当前管理员的 API Bearer Token。
+// 明文令牌只在生成时返回，数据库仅保存 SHA-256 哈希。
+func (m *authManager) handleToken(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	username, ok := m.currentCookieUsername(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "请先通过管理后台登录")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		token := "yyb_" + hex.EncodeToString(raw)
+		if err := m.db.RotateAPIToken(r.Context(), username, hashAPIToken(token)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token":      token,
+			"token_type": "Bearer",
+			"username":   username,
+			"created_at": time.Now().Unix(),
+		})
+	case http.MethodGet:
+		meta, err := m.db.ActiveAPITokenMeta(r.Context(), username)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if meta == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"active": false})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"active":       true,
+			"created_at":   meta.CreatedAt,
+			"last_used_at": meta.LastUsedAt,
+		})
+	case http.MethodDelete:
+		if err := m.db.RevokeAPITokens(r.Context(), username); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"revoked": true})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 // ginMiddleware 校验会话：API 请求未认证返回 401，页面请求跳转 /login。
@@ -239,6 +297,22 @@ func isBrowserPagePath(path string) bool {
 }
 
 func (m *authManager) currentUsername(r *http.Request) (string, bool) {
+	if username, ok := m.currentCookieUsername(r); ok {
+		return username, true
+	}
+	value := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(value) < 8 || !strings.EqualFold(value[:7], "Bearer ") {
+		return "", false
+	}
+	token := strings.TrimSpace(value[7:])
+	if token == "" {
+		return "", false
+	}
+	username, ok, err := m.db.ValidateAPIToken(r.Context(), hashAPIToken(token))
+	return username, ok && err == nil
+}
+
+func (m *authManager) currentCookieUsername(r *http.Request) (string, bool) {
 	c, err := r.Cookie(m.cookieName)
 	if err != nil || c.Value == "" {
 		return "", false
@@ -255,6 +329,11 @@ func (m *authManager) currentUsername(r *http.Request) (string, bool) {
 	// 滑动续期
 	sess.expiresAt = time.Now().Add(m.ttl)
 	return sess.username, true
+}
+
+func hashAPIToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 func (m *authManager) createSession(username string) (string, error) {

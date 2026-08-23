@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS admin_users (
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    username        TEXT    NOT NULL,
+    token_hash      TEXT    NOT NULL UNIQUE,
+    created_at      INTEGER NOT NULL,
+    last_used_at    INTEGER,
+    revoked_at      INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_username ON api_tokens(username);
 `
 
 var defaultFeatures = []Feature{
@@ -124,6 +134,11 @@ type AdminUser struct {
 	PasswordHash string `json:"-"`
 	CreatedAt    int64  `json:"created_at"`
 	UpdatedAt    int64  `json:"updated_at"`
+}
+
+type APITokenMeta struct {
+	CreatedAt  int64
+	LastUsedAt *int64
 }
 
 func Open(path string) (*DB, error) {
@@ -469,6 +484,78 @@ func (db *DB) SetAdminPassword(ctx context.Context, username, passwordHash strin
 		passwordHash, time.Now().Unix(), username,
 	)
 	return err
+}
+
+func (db *DB) RotateAPIToken(ctx context.Context, username, tokenHash string) error {
+	now := time.Now().Unix()
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx,
+		"UPDATE api_tokens SET revoked_at=? WHERE username=? AND revoked_at IS NULL",
+		now, username,
+	); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx,
+		"INSERT INTO api_tokens(username, token_hash, created_at) VALUES(?,?,?)",
+		username, tokenHash, now,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (db *DB) ValidateAPIToken(ctx context.Context, tokenHash string) (string, bool, error) {
+	var username string
+	var id int64
+	err := db.sql.QueryRowContext(ctx,
+		"SELECT id, username FROM api_tokens WHERE token_hash=? AND revoked_at IS NULL",
+		tokenHash,
+	).Scan(&id, &username)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	_, err = db.sql.ExecContext(ctx,
+		"UPDATE api_tokens SET last_used_at=? WHERE id=?",
+		time.Now().Unix(), id,
+	)
+	if err != nil {
+		return "", false, err
+	}
+	return username, true, nil
+}
+
+func (db *DB) RevokeAPITokens(ctx context.Context, username string) error {
+	_, err := db.sql.ExecContext(ctx,
+		"UPDATE api_tokens SET revoked_at=? WHERE username=? AND revoked_at IS NULL",
+		time.Now().Unix(), username,
+	)
+	return err
+}
+
+func (db *DB) ActiveAPITokenMeta(ctx context.Context, username string) (*APITokenMeta, error) {
+	var meta APITokenMeta
+	var lastUsed sql.NullInt64
+	err := db.sql.QueryRowContext(ctx,
+		"SELECT created_at, last_used_at FROM api_tokens WHERE username=? AND revoked_at IS NULL ORDER BY id DESC LIMIT 1",
+		username,
+	).Scan(&meta.CreatedAt, &lastUsed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if lastUsed.Valid {
+		meta.LastUsedAt = &lastUsed.Int64
+	}
+	return &meta, nil
 }
 
 func (a *WechatAccount) Public() AccountPublic {

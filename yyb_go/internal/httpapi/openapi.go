@@ -78,6 +78,34 @@ func newOpenAPISpec() map[string]any {
 					}),
 				),
 			},
+			"/auth/token": map[string]any{
+				"post": openAPIOperation(
+					[]string{"auth"},
+					"生成或轮换 API Token",
+					nil,
+					nil,
+					defaulted(map[string]any{
+						"200": jsonResponse("API Token 仅在生成时返回明文。", objectSchema([]string{"token", "token_type"}, map[string]any{
+							"token":      map[string]any{"type": "string"},
+							"token_type": map[string]any{"type": "string", "example": "Bearer"},
+						})),
+					}),
+				),
+				"get": openAPIOperation(
+					[]string{"auth"},
+					"查询当前 API Token 状态",
+					nil,
+					nil,
+					defaulted(map[string]any{"200": jsonResponse("Token 状态。", freeFormObjectSchema("Token 状态。"))}),
+				),
+				"delete": openAPIOperation(
+					[]string{"auth"},
+					"撤销当前 API Token",
+					nil,
+					nil,
+					defaulted(map[string]any{"200": jsonResponse("Token 已撤销。", freeFormObjectSchema("撤销结果。"))}),
+				),
+			},
 			"/qr": map[string]any{
 				"post": openAPIOperation(
 					[]string{"qr"},
