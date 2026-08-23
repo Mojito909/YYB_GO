@@ -29,8 +29,15 @@
 - 增加多阶段 Docker 构建文件。
 - 增加 `linux/amd64` 和 `linux/arm64` 多架构镜像构建。
 - 增加 GitHub Actions 工作流：Pull Request 只构建，`main` 和 `v*` 标签自动推送 Docker Hub。
+- 发布 Docker Hub 镜像 `joey772/yyb-go:latest`。
 - 增加 Docker Buildx 缓存和健康检查配置。
 - 增加 `.dockerignore`，排除本地运行数据和敏感文件。
+
+### Fixed
+
+#### Docker 架构
+
+- 修复跨架构构建时未显式传入 `TARGETOS/TARGETARCH`，导致 ARM 镜像可能携带错误架构可执行文件的问题。
 
 ### Planned
 

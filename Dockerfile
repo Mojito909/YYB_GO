@@ -2,6 +2,9 @@
 
 FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS builder
 
+ARG TARGETOS
+ARG TARGETARCH
+
 WORKDIR /src
 
 COPY yyb_go/go.mod yyb_go/go.sum ./yyb_go/
@@ -13,7 +16,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY yyb_go/ ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/yyb-go ./cmd/yyb-go
 
 FROM alpine:3.21

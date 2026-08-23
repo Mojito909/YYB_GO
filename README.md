@@ -51,27 +51,51 @@ go run ./cmd/yyb-go -host 127.0.0.1 -port 8000
 - `v*` 标签：构建并推送版本标签
 - 构建平台：`linux/amd64`、`linux/arm64`
 
-工作流使用仓库 Secrets 中的 `DOCKER_USERNAME` 和 `DOCKER_PASSWORD`，镜像名称为：
+当前已发布 Docker Hub 镜像：
 
 ```text
-docker.io/DOCKER_USERNAME/yyb-go
+joey772/yyb-go:latest
 ```
 
-本地运行：
+拉取镜像：
 
 ```bash
-docker build -t yyb-go:local .
+docker pull joey772/yyb-go:latest
+```
+
+运行容器：
+
+```bash
 docker volume create yyb-go-data
 docker run -d \
   --name yyb-go \
   -p 8000:8000 \
   -e YYB_ADMIN_USER=admin \
-  -e YYB_ADMIN_PASSWORD='change-me-please' \
+  -e YYB_ADMIN_PASSWORD='YourStrongPasswordHere' \
+  -e TZ=Asia/Shanghai \
   -v yyb-go-data:/app/resource \
-  yyb-go:local
+  --restart unless-stopped \
+  joey772/yyb-go:latest
 ```
 
 `/app/resource` 用于持久化数据库、账号凭证、会话和页面运行数据。
+
+更新镜像：
+
+```bash
+docker pull joey772/yyb-go:latest
+docker stop yyb-go
+docker rm yyb-go
+docker run -d \
+  --name yyb-go \
+  -p 8000:8000 \
+  -e YYB_ADMIN_USER=admin \
+  -e YYB_ADMIN_PASSWORD='YourStrongPasswordHere' \
+  -e TZ=Asia/Shanghai \
+  -v yyb-go-data:/app/resource \
+  --restart unless-stopped \
+  joey772/yyb-go:latest
+```
 
 ## 项目结构
 
