@@ -343,6 +343,20 @@ func (a *App) handleAccountsRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		// 账号级 API 令牌只能看到自己绑定的账号
+		if p, ok := principalFrom(r.Context()); ok && p.viaToken {
+			acc, err := a.db.GetAccount(r.Context(), p.accountID)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					writeJSON(w, http.StatusOK, []store.AccountPublic{})
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, []store.AccountPublic{acc.Public()})
+			return
+		}
 		accounts, err := a.db.ListAccounts(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())

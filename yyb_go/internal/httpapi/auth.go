@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"math/big"
 	"net/http"
@@ -209,7 +211,7 @@ func (m *authManager) handleChangePassword(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := m.db.RevokeAPITokens(r.Context(), username); err != nil {
+	if err := m.db.RevokeAllAPITokens(r.Context(), username); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -218,8 +220,8 @@ func (m *authManager) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"password_changed": true})
 }
 
-// handleToken 生成、查看和撤销当前管理员的 API Bearer Token。
-// 明文令牌只在生成时返回，数据库仅保存 SHA-256 哈希。
+// handleToken 生成、查看和撤销某个微信账号的 API Bearer Token。
+// 令牌与账号一对一绑定，只能操作该账号；明文令牌只在生成时返回，数据库仅保存 SHA-256 哈希。
 func (m *authManager) handleToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	username, ok := m.currentCookieUsername(r)
@@ -228,14 +230,31 @@ func (m *authManager) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
-	case http.MethodPost:
+	case http.MethodPost, http.MethodDelete:
+		ref, err := requestRef(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		acc, ok := m.resolveTokenAccount(w, r, ref)
+		if !ok {
+			return
+		}
+		if r.Method == http.MethodDelete {
+			if err := m.db.RevokeAPITokens(r.Context(), username, acc.ID); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "account_id": acc.ID})
+			return
+		}
 		raw := make([]byte, 32)
 		if _, err := rand.Read(raw); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		token := "yyb_" + hex.EncodeToString(raw)
-		if err := m.db.RotateAPIToken(r.Context(), username, hashAPIToken(token)); err != nil {
+		if err := m.db.RotateAPIToken(r.Context(), username, acc.ID, hashAPIToken(token)); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -243,52 +262,168 @@ func (m *authManager) handleToken(w http.ResponseWriter, r *http.Request) {
 			"token":      token,
 			"token_type": "Bearer",
 			"username":   username,
+			"account_id": acc.ID,
+			"openid":     acc.OpenID,
 			"created_at": time.Now().Unix(),
 		})
 	case http.MethodGet:
-		meta, err := m.db.ActiveAPITokenMeta(r.Context(), username)
+		acc, ok := m.resolveTokenAccount(w, r, strings.TrimSpace(r.URL.Query().Get("ref")))
+		if !ok {
+			return
+		}
+		meta, err := m.db.ActiveAPITokenMeta(r.Context(), username, acc.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		if meta == nil {
-			writeJSON(w, http.StatusOK, map[string]any{"active": false})
+			writeJSON(w, http.StatusOK, map[string]any{"active": false, "account_id": acc.ID})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"active":       true,
+			"account_id":   acc.ID,
 			"created_at":   meta.CreatedAt,
 			"last_used_at": meta.LastUsedAt,
 		})
-	case http.MethodDelete:
-		if err := m.db.RevokeAPITokens(r.Context(), username); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"revoked": true})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
+// resolveTokenAccount 把 ref 解析为微信账号，令牌必须绑定到一个已存在的账号。
+func (m *authManager) resolveTokenAccount(w http.ResponseWriter, r *http.Request, ref string) (*store.WechatAccount, bool) {
+	if ref == "" {
+		writeError(w, http.StatusBadRequest, "ref is required：令牌必须绑定到具体账号")
+		return nil, false
+	}
+	acc, err := m.db.ResolveAccount(r.Context(), ref)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "account not found: "+ref)
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return nil, false
+	}
+	return acc, true
+}
+
+// principal 表示一次请求的调用者身份。
+// accountID 为 0 表示管理后台 Cookie 会话（可访问全部账号）；
+// viaToken 为 true 表示账号级 API 令牌，只能访问 accountID 对应的账号。
+type principal struct {
+	username  string
+	accountID int64
+	viaToken  bool
+}
+
+type principalCtxKey struct{}
+
+func withPrincipal(ctx context.Context, p principal) context.Context {
+	return context.WithValue(ctx, principalCtxKey{}, p)
+}
+
+func principalFrom(ctx context.Context) (principal, bool) {
+	p, ok := ctx.Value(principalCtxKey{}).(principal)
+	return p, ok
+}
+
+// tokenAllowedPaths 列出账号级令牌可访问的接口，其余（页面、扫码、文档、删除账号）一律 403。
+var tokenAllowedPaths = map[string]string{
+	"/accounts":             http.MethodGet,
+	"/accounts/avatar":      http.MethodGet,
+	"/accounts/refresh":     http.MethodPost,
+	"/accounts/resync":      http.MethodPost,
+	"/wxapp/getCode":        http.MethodPost,
+	"/wxapp/getPhoneNumber": http.MethodPost,
+	"/wxapp/operateWxData":  http.MethodPost,
+}
+
 // ginMiddleware 校验会话：API 请求未认证返回 401，页面请求跳转 /login。
+// 账号级 API 令牌还会额外校验请求目标账号，越权返回 403。
 func (m *authManager) ginMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if _, ok := m.currentUsername(c.Request); ok {
-			c.Next()
+		p, ok := m.currentPrincipal(c.Request)
+		if !ok {
+			if isBrowserPagePath(c.Request.URL.Path) {
+				c.Redirect(http.StatusFound, "/login")
+				c.Abort()
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusUnauthorized, apiEnvelope{
+				Code: http.StatusUnauthorized,
+				Msg:  "未登录或会话已过期",
+				Data: nil,
+			})
 			return
 		}
-		if isBrowserPagePath(c.Request.URL.Path) {
-			c.Redirect(http.StatusFound, "/login")
-			c.Abort()
+		if p.viaToken && !m.authorizeToken(c, p) {
 			return
 		}
-		c.AbortWithStatusJSON(http.StatusUnauthorized, apiEnvelope{
-			Code: http.StatusUnauthorized,
-			Msg:  "未登录或会话已过期",
-			Data: nil,
-		})
+		c.Request = c.Request.WithContext(withPrincipal(c.Request.Context(), p))
+		c.Next()
 	}
+}
+
+// authorizeToken 校验账号级令牌的访问范围：接口白名单 + 目标账号归属。
+func (m *authManager) authorizeToken(c *gin.Context, p principal) bool {
+	abort := func(code int, msg string) bool {
+		c.AbortWithStatusJSON(code, apiEnvelope{Code: code, Msg: msg, Data: nil})
+		return false
+	}
+	method, allowed := tokenAllowedPaths[c.Request.URL.Path]
+	if !allowed || c.Request.Method != method {
+		return abort(http.StatusForbidden, "API 令牌无权访问该接口")
+	}
+	// GET /accounts 不带 ref，由处理器按令牌绑定账号收窄返回结果
+	if c.Request.URL.Path == "/accounts" {
+		return true
+	}
+	ref, err := requestRef(c.Request)
+	if err != nil {
+		return abort(http.StatusBadRequest, "invalid JSON: "+err.Error())
+	}
+	if ref == "" {
+		return abort(http.StatusBadRequest, "ref is required：API 令牌不支持批量操作")
+	}
+	acc, err := m.db.ResolveAccount(c.Request.Context(), ref)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return abort(http.StatusNotFound, "account not found: "+ref)
+		}
+		return abort(http.StatusInternalServerError, err.Error())
+	}
+	if acc.ID != p.accountID {
+		return abort(http.StatusForbidden, "API 令牌与目标账号不匹配")
+	}
+	return true
+}
+
+// requestRef 从查询参数或 JSON 请求体中读取 ref，读取后会还原请求体供后续处理器使用。
+func requestRef(r *http.Request) (string, error) {
+	if ref := strings.TrimSpace(r.URL.Query().Get("ref")); ref != "" {
+		return ref, nil
+	}
+	if r.Body == nil {
+		return "", nil
+	}
+	raw, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	if err != nil {
+		return "", err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return "", nil
+	}
+	var body struct {
+		Ref string `json:"ref"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(body.Ref), nil
 }
 
 // isBrowserPagePath 判断是否为浏览器导航页面（跳转登录页而非返回 401）。
@@ -296,20 +431,28 @@ func isBrowserPagePath(path string) bool {
 	return path == "/" || path == "/scan" || path == "/docs" || strings.HasPrefix(path, "/docs/")
 }
 
-func (m *authManager) currentUsername(r *http.Request) (string, bool) {
+func (m *authManager) currentPrincipal(r *http.Request) (principal, bool) {
 	if username, ok := m.currentCookieUsername(r); ok {
-		return username, true
+		return principal{username: username}, true
 	}
 	value := strings.TrimSpace(r.Header.Get("Authorization"))
 	if len(value) < 8 || !strings.EqualFold(value[:7], "Bearer ") {
-		return "", false
+		return principal{}, false
 	}
 	token := strings.TrimSpace(value[7:])
 	if token == "" {
-		return "", false
+		return principal{}, false
 	}
-	username, ok, err := m.db.ValidateAPIToken(r.Context(), hashAPIToken(token))
-	return username, ok && err == nil
+	username, accountID, ok, err := m.db.ValidateAPIToken(r.Context(), hashAPIToken(token))
+	if err != nil || !ok {
+		return principal{}, false
+	}
+	return principal{username: username, accountID: accountID, viaToken: true}, true
+}
+
+func (m *authManager) currentUsername(r *http.Request) (string, bool) {
+	p, ok := m.currentPrincipal(r)
+	return p.username, ok
 }
 
 func (m *authManager) currentCookieUsername(r *http.Request) (string, bool) {

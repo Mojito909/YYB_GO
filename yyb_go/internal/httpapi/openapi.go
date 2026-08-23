@@ -81,28 +81,32 @@ func newOpenAPISpec() map[string]any {
 			"/auth/token": map[string]any{
 				"post": openAPIOperation(
 					[]string{"auth"},
-					"生成或轮换 API Token",
-					nil,
-					nil,
+					"为指定账号生成或轮换 API Token",
+					[]map[string]any{queryStringParam("ref", "账号标识（id / uin / openid），也可放在请求体。", false)},
+					jsonOptionalRequestBody(refSchema("AccountRefRequest")),
 					defaulted(map[string]any{
-						"200": jsonResponse("API Token 仅在生成时返回明文。", objectSchema([]string{"token", "token_type"}, map[string]any{
+						"200": jsonResponse("API Token 仅在生成时返回明文，且只能操作绑定的账号。", objectSchema([]string{"token", "token_type", "account_id"}, map[string]any{
 							"token":      map[string]any{"type": "string"},
 							"token_type": map[string]any{"type": "string", "example": "Bearer"},
+							"account_id": int64Schema(),
+							"openid":     map[string]any{"type": "string"},
+							"username":   map[string]any{"type": "string"},
+							"created_at": int64Schema(),
 						})),
 					}),
 				),
 				"get": openAPIOperation(
 					[]string{"auth"},
-					"查询当前 API Token 状态",
-					nil,
+					"查询指定账号的 API Token 状态",
+					[]map[string]any{queryStringParam("ref", "账号标识（id / uin / openid）。", true)},
 					nil,
 					defaulted(map[string]any{"200": jsonResponse("Token 状态。", freeFormObjectSchema("Token 状态。"))}),
 				),
 				"delete": openAPIOperation(
 					[]string{"auth"},
-					"撤销当前 API Token",
-					nil,
-					nil,
+					"撤销指定账号的 API Token",
+					[]map[string]any{queryStringParam("ref", "账号标识（id / uin / openid），也可放在请求体。", false)},
+					jsonOptionalRequestBody(refSchema("AccountRefRequest")),
 					defaulted(map[string]any{"200": jsonResponse("Token 已撤销。", freeFormObjectSchema("撤销结果。"))}),
 				),
 			},

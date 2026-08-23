@@ -96,53 +96,111 @@ function setupUserMenu() {
     close();
     showChangePasswordModal();
   });
-
-  $("apiTokenBtn").addEventListener("click", () => {
-    close();
-    showAPITokenModal();
-  });
 }
 
-function showAPITokenModal() {
+/**
+ * 显示指定账号的 API 令牌管理弹窗。
+ * 令牌与账号一对一绑定，只能调用该账号的接口。
+ * @param {object} account 账号对象（需含 openid）
+ */
+function showAPITokenModal(account) {
+  const name = accountName(account);
+  const ref = account.openid;
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   overlay.innerHTML = `
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tokenTitle">
-      <h3 id="tokenTitle">生成 API 令牌</h3>
-      <p class="modal-msg">令牌用于青龙等脚本调用接口。生成新令牌后，旧令牌会立即失效。</p>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tokenTitle" style="width:min(520px,100%)">
+      <h3 id="tokenTitle">API 令牌 · ${escapeHTML(name)}</h3>
+      <p class="modal-msg">令牌绑定当前账号，青龙等脚本用它只能操作该账号。重新生成会立即吊销旧令牌。</p>
+      <dl class="kv-grid" id="tokenStatus"><dt>状态</dt><dd>加载中…</dd></dl>
       <div class="field hidden" id="tokenResultField">
         <label for="apiTokenValue">新令牌（仅显示这一次）</label>
         <input class="input" id="apiTokenValue" readonly spellcheck="false">
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-act="cancel">关闭</button>
-        <button class="btn primary" type="button" data-act="generate">生成并显示</button>
+        <button class="btn danger hidden" type="button" data-act="revoke">吊销令牌</button>
+        <button class="btn primary" type="button" data-act="generate">生成令牌</button>
       </div>
     </div>
   `;
   const close = () => overlay.remove();
+  const statusEl = overlay.querySelector("#tokenStatus");
+  const revokeBtn = overlay.querySelector('[data-act="revoke"]');
+  const generateBtn = overlay.querySelector('[data-act="generate"]');
+
+  const renderStatus = info => {
+    statusEl.innerHTML = "";
+    const rows = info && info.active
+      ? [["状态", "已生成"], ["绑定账号 ID", info.account_id], ["生成时间", formatTime(info.created_at)], ["最近使用", formatTime(info.last_used_at)]]
+      : [["状态", "尚未生成"]];
+    for (const [k, v] of rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = k;
+      const dd = document.createElement("dd");
+      dd.textContent = String(v);
+      statusEl.append(dt, dd);
+    }
+    revokeBtn.classList.toggle("hidden", !(info && info.active));
+    generateBtn.textContent = info && info.active ? "重新生成" : "生成令牌";
+  };
+
+  const loadStatus = async () => {
+    try {
+      renderStatus(await api("GET", `/auth/token?ref=${encodeURIComponent(ref)}`));
+    } catch (error) {
+      statusEl.innerHTML = "";
+      const dt = document.createElement("dt");
+      dt.textContent = "状态";
+      const dd = document.createElement("dd");
+      dd.textContent = "查询失败：" + error.message;
+      statusEl.append(dt, dd);
+    }
+  };
+
   overlay.querySelector('[data-act="cancel"]').addEventListener("click", close);
-  overlay.querySelector('[data-act="generate"]').addEventListener("click", async event => {
+
+  generateBtn.addEventListener("click", async event => {
     const button = event.currentTarget;
+    const label = button.textContent;
     button.disabled = true;
     button.innerHTML = '<span class="spin" aria-hidden="true"></span> 生成中';
     try {
-      const result = await api("POST", "/auth/token");
+      const result = await api("POST", "/auth/token", { ref });
       const input = overlay.querySelector("#apiTokenValue");
       input.value = result.token || "";
       overlay.querySelector("#tokenResultField").classList.remove("hidden");
-      button.disabled = false;
-      button.textContent = "重新生成";
       input.focus();
       input.select();
       Toast.success("令牌已生成，请立即复制保存");
+      await loadStatus();
     } catch (error) {
       Toast.error("令牌生成失败：" + error.message);
-      button.disabled = false;
-      button.textContent = "生成并显示";
+      button.textContent = label;
+    }
+    button.disabled = false;
+  });
+
+  revokeBtn.addEventListener("click", async () => {
+    const ok = await confirmModal({
+      title: "吊销 API 令牌",
+      message: `确定吊销账号「${name}」的令牌吗？使用该令牌的脚本会立即失去访问权限。`,
+      confirmText: "吊销",
+      danger: true
+    });
+    if (!ok) return;
+    try {
+      await api("DELETE", "/auth/token", { ref });
+      overlay.querySelector("#tokenResultField").classList.add("hidden");
+      Toast.success("令牌已吊销");
+      await loadStatus();
+    } catch (error) {
+      Toast.error("吊销失败：" + error.message);
     }
   });
+
   document.body.appendChild(overlay);
+  loadStatus();
 }
 
 function showChangePasswordModal() {
@@ -353,6 +411,7 @@ function renderAccounts() {
         <span class="account-meta" title="uin ${escapeHTML(account.uin ?? "-")}">uin: ${escapeHTML(account.uin ?? "-")}</span>
         <span class="account-card-actions">
           <button class="btn sm secondary" type="button" data-op="detail">详情</button>
+          <button class="btn sm secondary" type="button" data-op="token">令牌</button>
           <button class="btn sm danger" type="button" data-op="delete">删除</button>
         </span>
       </span>
@@ -369,6 +428,7 @@ function renderAccounts() {
     card.addEventListener("click", e => {
       const op = e.target.closest("[data-op]")?.dataset.op;
       if (op === "detail") { openDrawer(account.openid); return; }
+      if (op === "token") { showAPITokenModal(account); return; }
       if (op === "delete") { confirmDelete(account); return; }
       selectCard();
     });
@@ -502,6 +562,11 @@ function setupDrawer() {
     } catch (error) {
       Toast.error("同步失败：" + error.message);
     }
+  });
+
+  $("drawerTokenBtn").addEventListener("click", () => {
+    const account = drawerAccount();
+    if (account) showAPITokenModal(account);
   });
 
   $("drawerDeleteBtn").addEventListener("click", () => {

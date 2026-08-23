@@ -63,12 +63,14 @@ CREATE TABLE IF NOT EXISTS admin_users (
 CREATE TABLE IF NOT EXISTS api_tokens (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     username        TEXT    NOT NULL,
+    account_id      INTEGER NOT NULL,
     token_hash      TEXT    NOT NULL UNIQUE,
     created_at      INTEGER NOT NULL,
     last_used_at    INTEGER,
     revoked_at      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_api_tokens_username ON api_tokens(username);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_account ON api_tokens(account_id);
 `
 
 var defaultFeatures = []Feature{
@@ -137,6 +139,7 @@ type AdminUser struct {
 }
 
 type APITokenMeta struct {
+	AccountID  int64
 	CreatedAt  int64
 	LastUsedAt *int64
 }
@@ -165,6 +168,10 @@ func Open(path string) (*DB, error) {
 	_, _ = db.ExecContext(ctx, "PRAGMA synchronous=NORMAL")
 	_, _ = db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
 	if err = migrateSessionsTable(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err = migrateAPITokensTable(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -234,6 +241,41 @@ func sqliteTableExists(ctx context.Context, db *sql.DB, name string) (bool, erro
 	var n int
 	err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", name).Scan(&n)
 	return n > 0, err
+}
+
+func sqliteColumnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.QueryContext(ctx, "SELECT name FROM pragma_table_info(?)", table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, rows.Err()
+		}
+	}
+	return false, rows.Err()
+}
+
+// migrateAPITokensTable 把旧的管理员级全局令牌表升级为账号级令牌表。
+// 旧表没有 account_id，历史令牌无法确定归属，直接清空以避免越权。
+func migrateAPITokensTable(ctx context.Context, db *sql.DB) error {
+	exists, err := sqliteTableExists(ctx, db, "api_tokens")
+	if err != nil || !exists {
+		return err
+	}
+	hasAccount, err := sqliteColumnExists(ctx, db, "api_tokens", "account_id")
+	if err != nil || hasAccount {
+		return err
+	}
+	if _, err = db.ExecContext(ctx, "DROP TABLE api_tokens"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (db *DB) UpsertAccount(ctx context.Context, openid, loginBuffer string, alias, nickname, avatar *string, userInfo map[string]any, credentials map[string]any, status *string) (*WechatAccount, error) {
@@ -347,6 +389,9 @@ func (db *DB) SetAccountStatus(ctx context.Context, id int64, status string) err
 }
 
 func (db *DB) DeleteAccount(ctx context.Context, id int64) error {
+	if _, err := db.sql.ExecContext(ctx, "DELETE FROM api_tokens WHERE account_id=?", id); err != nil {
+		return err
+	}
 	_, err := db.sql.ExecContext(ctx, "DELETE FROM wechat_accounts WHERE id=?", id)
 	return err
 }
@@ -486,7 +531,9 @@ func (db *DB) SetAdminPassword(ctx context.Context, username, passwordHash strin
 	return err
 }
 
-func (db *DB) RotateAPIToken(ctx context.Context, username, tokenHash string) error {
+// RotateAPIToken 为 (username, accountID) 生成新令牌，并吊销该组合下的旧令牌。
+// 其他账号的令牌不受影响。
+func (db *DB) RotateAPIToken(ctx context.Context, username string, accountID int64, tokenHash string) error {
 	now := time.Now().Unix()
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -494,44 +541,46 @@ func (db *DB) RotateAPIToken(ctx context.Context, username, tokenHash string) er
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(ctx,
-		"UPDATE api_tokens SET revoked_at=? WHERE username=? AND revoked_at IS NULL",
-		now, username,
+		"UPDATE api_tokens SET revoked_at=? WHERE username=? AND account_id=? AND revoked_at IS NULL",
+		now, username, accountID,
 	); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx,
-		"INSERT INTO api_tokens(username, token_hash, created_at) VALUES(?,?,?)",
-		username, tokenHash, now,
+		"INSERT INTO api_tokens(username, account_id, token_hash, created_at) VALUES(?,?,?,?)",
+		username, accountID, tokenHash, now,
 	); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func (db *DB) ValidateAPIToken(ctx context.Context, tokenHash string) (string, bool, error) {
+// ValidateAPIToken 校验令牌哈希，返回所属管理员用户名与绑定的账号 ID。
+func (db *DB) ValidateAPIToken(ctx context.Context, tokenHash string) (string, int64, bool, error) {
 	var username string
-	var id int64
+	var id, accountID int64
 	err := db.sql.QueryRowContext(ctx,
-		"SELECT id, username FROM api_tokens WHERE token_hash=? AND revoked_at IS NULL",
+		"SELECT id, username, account_id FROM api_tokens WHERE token_hash=? AND revoked_at IS NULL",
 		tokenHash,
-	).Scan(&id, &username)
+	).Scan(&id, &username, &accountID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", 0, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", 0, false, err
 	}
 	_, err = db.sql.ExecContext(ctx,
 		"UPDATE api_tokens SET last_used_at=? WHERE id=?",
 		time.Now().Unix(), id,
 	)
 	if err != nil {
-		return "", false, err
+		return "", 0, false, err
 	}
-	return username, true, nil
+	return username, accountID, true, nil
 }
 
-func (db *DB) RevokeAPITokens(ctx context.Context, username string) error {
+// RevokeAllAPITokens 吊销指定管理员在所有账号上的有效令牌（改密时使用）。
+func (db *DB) RevokeAllAPITokens(ctx context.Context, username string) error {
 	_, err := db.sql.ExecContext(ctx,
 		"UPDATE api_tokens SET revoked_at=? WHERE username=? AND revoked_at IS NULL",
 		time.Now().Unix(), username,
@@ -539,13 +588,23 @@ func (db *DB) RevokeAPITokens(ctx context.Context, username string) error {
 	return err
 }
 
-func (db *DB) ActiveAPITokenMeta(ctx context.Context, username string) (*APITokenMeta, error) {
+// RevokeAPITokens 吊销指定管理员在指定账号上的全部有效令牌。
+func (db *DB) RevokeAPITokens(ctx context.Context, username string, accountID int64) error {
+	_, err := db.sql.ExecContext(ctx,
+		"UPDATE api_tokens SET revoked_at=? WHERE username=? AND account_id=? AND revoked_at IS NULL",
+		time.Now().Unix(), username, accountID,
+	)
+	return err
+}
+
+// ActiveAPITokenMeta 查询指定管理员在指定账号上的当前有效令牌元信息。
+func (db *DB) ActiveAPITokenMeta(ctx context.Context, username string, accountID int64) (*APITokenMeta, error) {
 	var meta APITokenMeta
 	var lastUsed sql.NullInt64
 	err := db.sql.QueryRowContext(ctx,
-		"SELECT created_at, last_used_at FROM api_tokens WHERE username=? AND revoked_at IS NULL ORDER BY id DESC LIMIT 1",
-		username,
-	).Scan(&meta.CreatedAt, &lastUsed)
+		"SELECT created_at, last_used_at, account_id FROM api_tokens WHERE username=? AND account_id=? AND revoked_at IS NULL ORDER BY id DESC LIMIT 1",
+		username, accountID,
+	).Scan(&meta.CreatedAt, &lastUsed, &meta.AccountID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

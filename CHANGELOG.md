@@ -41,6 +41,24 @@
 
 ### Changed
 
+#### API 令牌
+
+- API 令牌改为账号级：令牌与微信账号一对一绑定，`api_tokens` 表新增 `account_id`。
+- `/auth/token` 的 POST / GET / DELETE 均需要 `ref`（账号 id / uin / openid），POST 与 DELETE 也可放在请求体。
+- 令牌只能访问白名单接口：`GET /accounts`、`GET /accounts/avatar`、`POST /accounts/refresh`、`POST /accounts/resync`、`POST /wxapp/getCode`、`POST /wxapp/getPhoneNumber`、`POST /wxapp/operateWxData`，其余接口返回 403。
+- 令牌访问其他账号的 `ref` 返回 403；`GET /accounts` 使用令牌时只返回绑定账号一条记录。
+- 启动迁移会丢弃不含 `account_id` 的旧 `api_tokens` 表，历史令牌全部失效，需在控制台重新生成。
+- 删除账号时同步清理该账号的令牌。
+
+#### 控制台
+
+- 令牌入口从右上角用户菜单迁到账号管理：账号卡片「令牌」按钮与详情抽屉「API 令牌」按钮。
+- 令牌弹窗显示绑定账号、生成时间与最近使用时间，支持重新生成与吊销。
+
+#### 青龙接入
+
+- 使用账号级令牌后脚本无需再配置 `YYB_ACCOUNTS`，令牌自身即决定可操作的账号。
+
 #### 仓库管理
 
 - 将 `resource/db`、`resource/avatars`、`resource/qr` 等运行时数据移出版本控制，新增 `.gitignore`。

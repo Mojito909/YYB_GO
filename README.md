@@ -43,14 +43,26 @@ go run ./cmd/yyb-go -host 127.0.0.1 -port 8000
 
 如果未设置 `YYB_ADMIN_PASSWORD`，首次启动会生成随机密码并输出到日志。
 
-登录后台后，可在右上角菜单生成 API 令牌。青龙调用时使用：
+登录后台后，进入「账号管理」，在账号卡片点「令牌」或在详情抽屉点「API 令牌」为该账号生成令牌。令牌与账号一对一绑定，只能操作绑定的那个账号。
+
+也可以直接调用接口生成（需要先用管理员会话登录，`ref` 支持账号 id / uin / openid）：
+
+```bash
+curl -b cookie.txt -H "Content-Type: application/json" \
+  -d '{"ref":"YOUR_ACCOUNT_OPENID"}' \
+  http://127.0.0.1:8000/auth/token
+```
+
+青龙调用时使用：
 
 ```bash
 curl -H "Authorization: Bearer YOUR_API_TOKEN" \
   http://127.0.0.1:8000/accounts
 ```
 
-生成新令牌会使旧令牌立即失效，修改管理员密码也会撤销令牌。令牌只在生成时显示一次，请妥善保存。
+令牌场景下 `GET /accounts` 只返回绑定的那一条账号，因此青龙脚本无需再配置 `YYB_ACCOUNTS`。令牌只能访问 `GET /accounts`、`GET /accounts/avatar`、`POST /accounts/refresh`、`POST /accounts/resync`、`POST /wxapp/getCode`、`POST /wxapp/getPhoneNumber`、`POST /wxapp/operateWxData`，访问其他接口或其他账号的 `ref` 会返回 403。
+
+同一账号重新生成令牌会使该账号的旧令牌立即失效（不影响其他账号），修改管理员密码会撤销全部令牌。令牌只在生成时显示一次，请妥善保存。
 
 ## Docker
 

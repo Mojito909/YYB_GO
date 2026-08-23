@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -82,6 +83,44 @@ func authedRequest(handler http.Handler, cookie *http.Cookie, method, path strin
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+// bearerRequest 用账号级 API 令牌发起请求。
+func bearerRequest(handler http.Handler, token, method, path string, body []byte) *httptest.ResponseRecorder {
+	var req *http.Request
+	if body != nil {
+		req = httptest.NewRequest(method, path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+	} else {
+		req = httptest.NewRequest(method, path, nil)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// issueTokenForTest 通过 Cookie 会话为指定账号生成令牌，返回明文令牌。
+func issueTokenForTest(t *testing.T, handler http.Handler, cookie *http.Cookie, ref string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"ref": ref})
+	rec := authedRequest(handler, cookie, http.MethodPost, "/auth/token", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /auth/token ref=%s status = %d, body = %s", ref, rec.Code, rec.Body.String())
+	}
+	var parsed struct {
+		Data struct {
+			Token     string `json:"token"`
+			AccountID int64  `json:"account_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	if parsed.Data.Token == "" || parsed.Data.AccountID == 0 {
+		t.Fatalf("token response missing token or account_id: %s", rec.Body.String())
+	}
+	return parsed.Data.Token
 }
 
 func TestHandlerServesGinRoutesAndSwaggerDocs(t *testing.T) {
@@ -214,46 +253,110 @@ func TestAuthLoginLogoutFlow(t *testing.T) {
 }
 
 func TestAPITokenFlow(t *testing.T) {
-	_, handler := newTestApp(t)
+	app, handler := newTestApp(t)
 	cookie := loginForTest(t, handler, testAdminUser, testAdminPass)
 
-	// 只有 Cookie 会话可以生成令牌。
-	created := authedRequest(handler, cookie, http.MethodPost, "/auth/token", nil)
-	if created.Code != http.StatusOK {
-		t.Fatalf("POST /auth/token status = %d, body = %s", created.Code, created.Body.String())
+	accA, err := app.db.UpsertAccount(context.Background(), "openid-a", "buffer-a", nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("create account A: %v", err)
 	}
-	var createdBody struct {
+	accB, err := app.db.UpsertAccount(context.Background(), "openid-b", "buffer-b", nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("create account B: %v", err)
+	}
+	if accB.ID == accA.ID {
+		t.Fatalf("account A and B share id %d", accA.ID)
+	}
+
+	// 令牌必须绑定账号：不带 ref 直接拒绝。
+	noRef := authedRequest(handler, cookie, http.MethodPost, "/auth/token", nil)
+	if noRef.Code != http.StatusBadRequest {
+		t.Fatalf("POST /auth/token without ref status = %d, body = %s", noRef.Code, noRef.Body.String())
+	}
+
+	// 未生成时状态为 inactive。
+	before := authedRequest(handler, cookie, http.MethodGet, "/auth/token?ref=openid-a", nil)
+	if before.Code != http.StatusOK {
+		t.Fatalf("GET /auth/token status = %d, body = %s", before.Code, before.Body.String())
+	}
+	var beforeBody struct {
 		Data struct {
-			Token string `json:"token"`
+			Active bool `json:"active"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(created.Body.Bytes(), &createdBody); err != nil {
-		t.Fatalf("decode token response: %v", err)
+	if err := json.Unmarshal(before.Body.Bytes(), &beforeBody); err != nil {
+		t.Fatalf("decode token status: %v", err)
 	}
-	if createdBody.Data.Token == "" {
-		t.Fatalf("token response missing token")
-	}
-
-	// Bearer Token 可以访问受保护 API。
-	request := httptest.NewRequest(http.MethodGet, "/accounts", nil)
-	request.Header.Set("Authorization", "Bearer "+createdBody.Data.Token)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, request)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /accounts with bearer token status = %d, body = %s", rec.Code, rec.Body.String())
+	if beforeBody.Data.Active {
+		t.Fatalf("token should be inactive before generation")
 	}
 
-	// 轮换后旧令牌立即失效。
-	rotated := authedRequest(handler, cookie, http.MethodPost, "/auth/token", nil)
-	if rotated.Code != http.StatusOK {
-		t.Fatalf("rotate API token status = %d, body = %s", rotated.Code, rotated.Body.String())
+	tokenA := issueTokenForTest(t, handler, cookie, "openid-a")
+
+	// Bearer Token 只返回绑定账号。
+	list := bearerRequest(handler, tokenA, http.MethodGet, "/accounts", nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("GET /accounts with bearer token status = %d, body = %s", list.Code, list.Body.String())
 	}
-	request = httptest.NewRequest(http.MethodGet, "/accounts", nil)
-	request.Header.Set("Authorization", "Bearer "+createdBody.Data.Token)
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, request)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /accounts with revoked bearer token status = %d", rec.Code)
+	var listBody struct {
+		Data []struct {
+			ID     int64  `json:"id"`
+			OpenID string `json:"openid"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &listBody); err != nil {
+		t.Fatalf("decode accounts list: %v", err)
+	}
+	if len(listBody.Data) != 1 || listBody.Data[0].ID != accA.ID {
+		t.Fatalf("bearer token accounts = %#v, want only account A(id=%d)", listBody.Data, accA.ID)
+	}
+
+	// 操作其他账号被拒绝（403）。
+	cross := bearerRequest(handler, tokenA, http.MethodPost, "/accounts/refresh", []byte(`{"ref":"openid-b"}`))
+	if cross.Code != http.StatusForbidden {
+		t.Fatalf("bearer token A operating account B status = %d, body = %s", cross.Code, cross.Body.String())
+	}
+
+	// 非白名单接口被拒绝（403）。
+	forbidden := bearerRequest(handler, tokenA, http.MethodDelete, "/accounts?ref=openid-a", nil)
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("bearer token DELETE /accounts status = %d, body = %s", forbidden.Code, forbidden.Body.String())
+	}
+
+	// 为账号 B 生成令牌不影响账号 A 的令牌。
+	tokenB := issueTokenForTest(t, handler, cookie, "openid-b")
+	if tokenB == tokenA {
+		t.Fatalf("account B token equals account A token")
+	}
+	stillOK := bearerRequest(handler, tokenA, http.MethodGet, "/accounts", nil)
+	if stillOK.Code != http.StatusOK {
+		t.Fatalf("token A status after issuing token B = %d", stillOK.Code)
+	}
+
+	// 同账号轮换令牌后旧令牌立即失效。
+	rotatedA := issueTokenForTest(t, handler, cookie, "openid-a")
+	if rotatedA == tokenA {
+		t.Fatalf("rotated token equals old token")
+	}
+	revoked := bearerRequest(handler, tokenA, http.MethodGet, "/accounts", nil)
+	if revoked.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /accounts with rotated-away token status = %d", revoked.Code)
+	}
+
+	// 显式吊销账号 B 的令牌。
+	del := authedRequest(handler, cookie, http.MethodDelete, "/auth/token", []byte(`{"ref":"openid-b"}`))
+	if del.Code != http.StatusOK {
+		t.Fatalf("DELETE /auth/token status = %d, body = %s", del.Code, del.Body.String())
+	}
+	afterRevoke := bearerRequest(handler, tokenB, http.MethodGet, "/accounts", nil)
+	if afterRevoke.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /accounts with revoked token B status = %d", afterRevoke.Code)
+	}
+
+	// 未知 ref 返回 404。
+	unknown := authedRequest(handler, cookie, http.MethodPost, "/auth/token", []byte(`{"ref":"openid-missing"}`))
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("POST /auth/token with unknown ref status = %d", unknown.Code)
 	}
 }
 
