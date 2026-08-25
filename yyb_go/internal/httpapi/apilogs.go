@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -168,6 +169,34 @@ func normalizeLogLimit(value int) int {
 	default:
 		return 20
 	}
+}
+
+func (a *App) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	period := strings.TrimSpace(r.URL.Query().Get("period"))
+	if period == "" {
+		period = "day"
+	}
+	metrics, err := a.db.GetAPIMetrics(r.Context(), period, time.Now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"metrics": metrics,
+		"runtime": map[string]any{
+			"goroutines": runtime.NumGoroutine(),
+			"heap_alloc_bytes": mem.HeapAlloc,
+			"heap_alloc_mb": float64(mem.HeapAlloc) / 1024 / 1024,
+			"num_gc": mem.NumGC,
+			"uptime_seconds": int64(time.Since(a.startedAt).Seconds()),
+		},
+	})
 }
 
 func (a *App) handleAPILogByID(w http.ResponseWriter, r *http.Request) {

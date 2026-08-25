@@ -12,9 +12,12 @@ const state = {
   lastResult: "",
   searchKeyword: "",
   statusFilter: "all",
+  accountSort: "updated",
   drawerOpenID: "",
   logs: { items: [], total: 0, offset: 0, limit: 20, retentionDays: 7 },
-  logRefreshTimer: null
+  logRefreshTimer: null,
+  dashboardPeriod: "day",
+  dashboardTimer: null
 };
 
 const $ = id => document.getElementById(id);
@@ -303,6 +306,109 @@ function showView(name) {
     clearInterval(state.logRefreshTimer);
     state.logRefreshTimer = null;
   }
+  if (view === "overview") {
+    loadDashboardMetrics(true);
+    if (!state.dashboardTimer) state.dashboardTimer = setInterval(() => {
+      if (activeViewFromHash() === "overview") loadDashboardMetrics(true);
+    }, 15000);
+  } else if (state.dashboardTimer) {
+    clearInterval(state.dashboardTimer);
+    state.dashboardTimer = null;
+  }
+}
+
+function formatDuration(seconds) {
+  const value = Math.max(0, Number(seconds || 0));
+  const days = Math.floor(value / 86400);
+  const hours = Math.floor(value % 86400 / 3600);
+  const minutes = Math.floor(value % 3600 / 60);
+  if (days) return `${days} 天 ${hours} 小时`;
+  if (hours) return `${hours} 小时 ${minutes} 分`;
+  return `${minutes} 分钟`;
+}
+
+function renderTrendChart(metrics) {
+  const buckets = metrics.buckets || [];
+  const max = Math.max(1, ...buckets.map(item => Number(item.calls || 0)));
+  const chart = $("trendChart");
+  chart.innerHTML = buckets.map(item => {
+    const calls = Number(item.calls || 0);
+    const failed = Number(item.failed || 0);
+    const height = calls ? Math.max(3, calls / max * 100) : 1;
+    const failedHeight = calls ? failed / max * 100 : 0;
+    const title = `${item.label}：${calls} 次，失败 ${failed} 次`;
+    return `<div class="trend-column" title="${escapeHTML(title)}"><span class="trend-bar" style="height:${height}%"></span><span class="trend-failed" style="height:${failedHeight}%"></span></div>`;
+  }).join("");
+  const labels = buckets.length ? [buckets[0].label, buckets[Math.floor((buckets.length - 1) / 2)].label, buckets[buckets.length - 1].label] : ["—", "—", "—"];
+  $("trendAxis").innerHTML = labels.map(label => `<span>${escapeHTML(label)}</span>`).join("");
+  chart.setAttribute("aria-label", `${periodLabel(metrics.period)}调用趋势，共 ${metrics.calls || 0} 次，失败 ${metrics.failed || 0} 次`);
+}
+
+function periodLabel(period) {
+  if (period === "week") return "最近 7 天";
+  if (period === "month") return "最近 30 天";
+  return "最近 24 小时";
+}
+
+function renderDashboardMetrics(data) {
+  const metrics = data.metrics || {};
+  const runtime = data.runtime || {};
+  const label = periodLabel(metrics.period || state.dashboardPeriod);
+  $("metricCalls").textContent = String(metrics.calls || 0);
+  $("metricCallsHint").textContent = label;
+  $("metricSuccessRate").textContent = metrics.calls ? `${Number(metrics.success_rate || 0).toFixed(1)}%` : "—";
+  $("metricSuccessHint").textContent = metrics.calls ? `成功 ${metrics.success || 0} · 失败 ${metrics.failed || 0}` : "暂无请求";
+  $("metricIPs").textContent = String(metrics.unique_ips || 0);
+  $("metricAvg").textContent = metrics.calls ? `${Number(metrics.avg_duration_ms || 0).toFixed(0)} ms` : "—";
+  $("metricP95").textContent = metrics.calls ? `P95 ${metrics.p95_duration_ms || 0} ms` : "P95 —";
+  $("trendDescription").textContent = metrics.period === "day" ? "按小时统计最近 24 小时" : `按天统计${label}`;
+  $("trendTotal").textContent = `${metrics.calls || 0} 次`;
+  $("runtimeUptime").textContent = formatDuration(runtime.uptime_seconds);
+  $("runtimeMemory").textContent = `${Number(runtime.heap_alloc_mb || 0).toFixed(1)} MB`;
+  $("runtimeGoroutines").textContent = String(runtime.goroutines || 0);
+  $("runtimeGC").textContent = String(runtime.num_gc || 0);
+  $("runtimeStatus").classList.add("ok");
+  $("runtimeStatus").classList.remove("bad");
+  $("runtimeStatusText").textContent = "正常";
+  $("trendChart").classList.remove("empty");
+  renderTrendChart(metrics);
+}
+
+function renderDashboardUnavailable() {
+  ["metricCalls", "metricSuccessRate", "metricIPs", "metricAvg", "runtimeUptime", "runtimeMemory", "runtimeGoroutines", "runtimeGC"].forEach(id => { $(id).textContent = "—"; });
+  $("metricSuccessHint").textContent = "指标暂不可用";
+  $("metricP95").textContent = "P95 —";
+  $("trendTotal").textContent = "—";
+  $("trendChart").classList.add("empty");
+  $("trendChart").innerHTML = '<span class="trend-empty">等待后端指标接口</span>';
+  $("trendAxis").innerHTML = "";
+  $("runtimeStatus").classList.remove("ok");
+  $("runtimeStatus").classList.add("bad");
+  $("runtimeStatusText").textContent = "未连接";
+}
+
+async function loadDashboardMetrics(silent = false) {
+  try {
+    renderDashboardMetrics(await api("GET", `/dashboard/metrics?period=${encodeURIComponent(state.dashboardPeriod)}`));
+  } catch (error) {
+    renderDashboardUnavailable();
+    if (!silent) {
+      const detail = error.status === 404 ? "总览接口未加载，请重启服务后刷新页面" : error.message;
+      Toast.error("加载总览指标失败：" + detail);
+    }
+  }
+}
+
+function setupDashboard() {
+  document.querySelectorAll("[data-period]").forEach(button => button.addEventListener("click", () => {
+    state.dashboardPeriod = button.dataset.period;
+    document.querySelectorAll("[data-period]").forEach(item => {
+      const active = item === button;
+      item.classList.toggle("active", active);
+      item.setAttribute("aria-selected", String(active));
+    });
+    loadDashboardMetrics();
+  }));
 }
 
 function formatLogTime(unix) {
@@ -410,11 +516,17 @@ function setupSidebar() {
 
 function filteredAccounts() {
   const kw = state.searchKeyword.trim().toLowerCase();
-  return state.accounts.filter(acc => {
+  const list = state.accounts.filter(acc => {
     if (state.statusFilter !== "all" && statusClass(acc.status) !== state.statusFilter) return false;
     if (!kw) return true;
     const haystack = [acc.nickname, acc.alias, acc.openid, acc.uin].filter(Boolean).join(" ").toLowerCase();
     return haystack.includes(kw);
+  });
+  const statusRank = { alive: 0, expired: 1, unknown: 2 };
+  return list.sort((a, b) => {
+    if (state.accountSort === "name") return accountName(a).localeCompare(accountName(b), "zh-CN");
+    if (state.accountSort === "status") return statusRank[statusClass(a.status)] - statusRank[statusClass(b.status)] || accountName(a).localeCompare(accountName(b), "zh-CN");
+    return Number(b.updated_at || b.last_checked_at || 0) - Number(a.updated_at || a.last_checked_at || 0);
   });
 }
 
@@ -429,9 +541,24 @@ function renderStats() {
   $("featureCount").textContent = String(state.features.length);
   $("navAccountCount").textContent = String(total);
 
+  [
+    ["filterCountAll", total],
+    ["filterCountAlive", alive],
+    ["filterCountExpired", expired],
+    ["filterCountUnknown", unknown]
+  ].forEach(([id, value]) => { if ($(id)) $(id).textContent = String(value); });
+
   $("legendAlive").textContent = String(alive);
   $("legendExpired").textContent = String(expired);
   $("legendUnknown").textContent = String(unknown);
+
+  const pctText = n => (total ? `${Math.round(n / total * 100)}%` : "0%");
+  $("legendAlivePct").textContent = pctText(alive);
+  $("legendExpiredPct").textContent = pctText(expired);
+  $("legendUnknownPct").textContent = pctText(unknown);
+  const health = total ? Math.round(alive / total * 100) : 0;
+  $("accountHealthScore").textContent = total ? `${health}%` : "—";
+  $("accountHealthHint").textContent = total ? (health >= 80 ? "账号整体状态良好" : health >= 50 ? "部分账号需要关注" : "建议尽快检查账号") : "等待账号数据";
 
   const pct = n => (total ? `${(n / total) * 100}%` : "0%");
   $("distAlive").style.width = pct(alive);
@@ -449,15 +576,29 @@ function syncSelectedAccount() {
   const selected = selectedAccount();
   const label = selected ? accountName(selected) : "未选择";
   $("selectedAccountName").textContent = label;
+  $("selectedAccountHint").textContent = selected ? `${statusText(selected.status)} · ${selected.openid}` : "未绑定调用账号";
   $("currentAccountText").textContent = label;
   document.querySelectorAll(".account-card").forEach(card => {
-    card.classList.toggle("selected", card.dataset.openid === state.selectedOpenID);
+    const selectedCard = card.dataset.openid === state.selectedOpenID;
+    card.classList.toggle("selected", selectedCard);
+    card.setAttribute("aria-pressed", String(selectedCard));
+    const currentLabel = card.querySelector(".account-current-label");
+    if (currentLabel) currentLabel.innerHTML = selectedCard
+      ? '<span class="status-dot" aria-hidden="true"></span> 当前调用账号'
+      : "可点击卡片选择";
   });
 }
 
 function renderAccounts() {
   const grid = $("accountGrid");
   const list = filteredAccounts();
+
+  $("accountResultCount").textContent = state.searchKeyword.trim() || state.statusFilter !== "all"
+    ? `显示 ${list.length} / 共 ${state.accounts.length} 个`
+    : `${list.length} 个结果`;
+  $("accountFilterHint").textContent = state.searchKeyword.trim()
+    ? `正在搜索“${state.searchKeyword.trim()}”`
+    : state.statusFilter === "all" ? "显示全部账号" : `仅显示${statusText(state.statusFilter)}账号`;
 
   if (!state.accounts.length) {
     grid.innerHTML = `<div class="empty-state">暂无账号，点击「添加账号」开始扫码。</div>`;
@@ -486,18 +627,26 @@ function renderAccounts() {
     card.setAttribute("role", "button");
     card.setAttribute("aria-label", `选择账号：${name}`);
     card.innerHTML = `
-      <span class="avatar">
+      <span class="avatar account-avatar">
         <img alt="" width="40" height="40" loading="lazy" src="/accounts/avatar?ref=${encodeURIComponent(account.openid)}">
         <span class="avatar-letter hidden">${escapeHTML(name.slice(0, 1).toUpperCase() || "Y")}</span>
       </span>
       <span class="account-main">
-        <span class="account-name" title="${escapeHTML(name)}">${escapeHTML(name)}</span>
-        <span class="badge ${cls}">${statusText(account.status)}</span>
-        <span class="account-meta" title="uin ${escapeHTML(account.uin ?? "-")}">uin: ${escapeHTML(account.uin ?? "-")}</span>
-        <span class="account-card-actions">
-          <button class="btn sm secondary" type="button" data-op="detail">详情</button>
-          <button class="btn sm secondary" type="button" data-op="token">令牌</button>
-          <button class="btn sm danger" type="button" data-op="delete">删除</button>
+        <span class="account-card-top">
+          <span class="account-name" title="${escapeHTML(name)}">${escapeHTML(name)}</span>
+          <span class="badge ${cls}">${statusText(account.status)}</span>
+        </span>
+        <span class="account-subline">${escapeHTML(account.alias || "未设置别名")}</span>
+        <span class="account-detail-row"><span>OpenID</span><strong title="${escapeHTML(account.openid || "-")}">${escapeHTML(account.openid || "-")}</strong></span>
+        <span class="account-detail-row"><span>UIN</span><strong>${escapeHTML(account.uin ?? "-")}</strong></span>
+        <span class="account-detail-row"><span>最近检测</span><strong>${escapeHTML(formatTime(account.last_checked_at))}</strong></span>
+        <span class="account-card-footer">
+          <span class="account-current-label">${state.selectedOpenID === account.openid ? '<span class="status-dot" aria-hidden="true"></span> 当前调用账号' : "可点击卡片选择"}</span>
+          <span class="account-card-actions">
+            <button class="btn sm secondary" type="button" data-op="detail">详情</button>
+            <button class="btn sm secondary" type="button" data-op="token">令牌</button>
+            <button class="btn sm danger" type="button" data-op="delete">删除</button>
+          </span>
         </span>
       </span>
     `;
@@ -717,6 +866,20 @@ function currentFeatureName() {
 function togglePayload() {
   const needsPayload = currentFeatureName().toLowerCase() === "operatewxdata";
   $("payloadGroup").classList.toggle("hidden", !needsPayload);
+  const hints = {
+    getCode: "获取小程序登录 code",
+    getPhoneNumber: "解密并获取手机号信息",
+    operateWxData: "代理调用通用云函数数据接口"
+  };
+  $("featureHint").textContent = hints[currentFeatureName()] || "接口参数";
+}
+
+function setCallStatus(type, label, summary, duration) {
+  const status = $("resultStatus");
+  status.className = `result-status ${type || "waiting"}`;
+  $("resultMeta").textContent = label;
+  $("resultSummary").firstElementChild.textContent = summary;
+  $("resultDuration").textContent = duration || "—";
 }
 
 async function callFeature() {
@@ -724,13 +887,14 @@ async function callFeature() {
   if (!account) {
     Toast.warning("请先选择一个账号");
     setResult("请先选择一个账号。", "缺少账号", true);
+    setCallStatus("error", "需要账号", "无法发送请求", "—");
     return;
   }
 
   const endpoint = currentFeatureName();
   const appID = $("appidInput").value.trim();
-  if (!endpoint) { setResult("当前没有可调用能力。", "缺少能力", true); return; }
-  if (!appID) { Toast.warning("请输入 APPID"); setResult("请输入 APPID。", "缺少 APPID", true); return; }
+  if (!endpoint) { setResult("当前没有可调用能力。", "缺少能力", true); setCallStatus("error", "需要能力", "无法发送请求", "—"); return; }
+  if (!appID) { Toast.warning("请输入 APPID"); setResult("请输入 APPID。", "缺少 APPID", true); setCallStatus("error", "需要 APPID", "无法发送请求", "—"); return; }
 
   const body = { ref: account.openid, app_id: appID };
   if (endpoint.toLowerCase() === "operatewxdata") {
@@ -740,6 +904,7 @@ async function callFeature() {
       body.payload = JSON.parse(raw);
     } catch {
       setResult("请求 JSON 格式不正确。", "JSON 解析失败", true);
+      setCallStatus("error", "JSON 无效", "无法发送请求", "—");
       Toast.error("请求 JSON 格式不正确");
       return;
     }
@@ -748,19 +913,22 @@ async function callFeature() {
   const button = $("callBtn");
   button.disabled = true;
   const originalCallLabel = button.innerHTML;
-  button.innerHTML = '<span class="spin" aria-hidden="true"></span> 调用中';
+  button.innerHTML = '<span class="spin" aria-hidden="true"></span> 请求中';
   const startedAt = performance.now();
-  setResult("调用中，首次调用可能需要建立会话…", "请求进行中", false);
+  setResult("请求发送中，首次调用可能需要建立会话…", "请求进行中", false);
+  setCallStatus("loading", "请求中", `正在调用 ${endpoint}`, "—");
   setActivity(`正在调用 ${endpoint}：${accountName(account)}`);
 
   try {
     const result = await api("POST", `/wxapp/${endpoint}`, body);
     const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
     setResult(result, `调用完成，用时 ${seconds}s`, false);
+    setCallStatus("success", "请求成功", `已返回 ${endpoint} 响应`, `${seconds}s`);
     Toast.success(`调用完成，用时 ${seconds}s`);
     await loadAccounts();
   } catch (error) {
     setResult(error.data || error.message, `调用失败 ${error.status || ""}`.trim(), true);
+    setCallStatus("error", "请求失败", error.message, `${((performance.now() - startedAt) / 1000).toFixed(1)}s`);
     Toast.error(`调用失败：${error.message}`);
   } finally {
     button.disabled = false;
@@ -775,7 +943,10 @@ $("refreshAllBtn").addEventListener("click", refreshAll);
 $("resyncAllBtn").addEventListener("click", resyncAll);
 $("featureSel").addEventListener("change", togglePayload);
 $("callBtn").addEventListener("click", callFeature);
-$("clearResultBtn").addEventListener("click", () => setResult("结果已清空。", "等待调用", false));
+$("clearResultBtn").addEventListener("click", () => {
+  setResult("暂无响应数据。", "等待请求", false);
+  setCallStatus("waiting", "等待请求", "准备就绪", "—");
+});
 $("copyResultBtn").addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(state.lastResult || $("resultBox").textContent);
@@ -789,13 +960,23 @@ $("accountSearch").addEventListener("input", e => {
   state.searchKeyword = e.target.value;
   renderAccounts();
 });
-$("statusFilter").addEventListener("change", e => {
-  state.statusFilter = e.target.value;
+document.querySelectorAll("#statusFilter [data-status]").forEach(button => button.addEventListener("click", () => {
+  state.statusFilter = button.dataset.status;
+  document.querySelectorAll("#statusFilter [data-status]").forEach(item => {
+    const active = item === button;
+    item.classList.toggle("active", active);
+    item.setAttribute("aria-selected", String(active));
+  });
+  renderAccounts();
+}));
+$("accountSort").addEventListener("change", e => {
+  state.accountSort = e.target.value;
   renderAccounts();
 });
 
 setupSidebar();
 setupAPILogs();
+setupDashboard();
 Theme.bindButton($("themeBtn"));
 setupUserMenu();
 setupDrawer();

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,6 +36,8 @@ type Config struct {
 	AuthTTL        time.Duration
 }
 
+const accessLogEnv = "YYB_ACCESS_LOG"
+
 type App struct {
 	cfg       Config
 	resources resources
@@ -42,6 +45,7 @@ type App struct {
 	pool      *protocol.Pool
 	qr        *qr.Client
 	auth      *authManager
+	startedAt time.Time
 
 	mu         sync.Mutex
 	qrSessions map[string]*qr.Session
@@ -104,6 +108,7 @@ func NewApp(cfg Config) (*App, error) {
 		db:         db,
 		pool:       pool,
 		qr:         qr.NewClient(cfg.RequestTimeout),
+		startedAt:  time.Now(),
 		auth:       auth,
 		qrSessions: map[string]*qr.Session{},
 	}, nil
@@ -132,7 +137,10 @@ func (a *App) Handler() http.Handler {
 	}
 
 	router := gin.New()
-	router.Use(gin.Logger(), gin.Recovery())
+	if middleware := accessLogger(strings.ToLower(strings.TrimSpace(os.Getenv(accessLogEnv)))); middleware != nil {
+		router.Use(middleware)
+	}
+	router.Use(gin.Recovery())
 
 	// 公开路由：登录页、鉴权接口、健康检查、静态资源
 	router.Any("/login", gin.WrapF(a.handleLoginPage))
@@ -171,11 +179,32 @@ func (a *App) Handler() http.Handler {
 	protected.Any("/api-logs", gin.WrapF(a.handleAPILogs))
 	protected.Any("/api-logs/settings", gin.WrapF(a.handleAPILogSettings))
 	protected.Any("/api-logs/:id", gin.WrapF(a.handleAPILogByID))
+	protected.Any("/dashboard/metrics", gin.WrapF(a.handleDashboardMetrics))
 	router.NoRoute(func(c *gin.Context) {
 		writeError(c.Writer, http.StatusNotFound, "not found")
 	})
 
 	return router
+}
+
+func accessLogger(mode string) gin.HandlerFunc {
+	switch mode {
+	case "off":
+		return nil
+	case "errors":
+		return func(c *gin.Context) {
+			started := time.Now()
+			c.Next()
+			duration := time.Since(started)
+			status := c.Writer.Status()
+			if status < http.StatusInternalServerError && duration < 2*time.Second {
+				return
+			}
+			log.Printf("[http] %s %s status=%d duration=%s ip=%s", c.Request.Method, c.Request.URL.Path, status, duration.Round(time.Millisecond), c.ClientIP())
+		}
+	default:
+		return gin.Logger()
+	}
 }
 
 func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {

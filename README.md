@@ -96,9 +96,14 @@ docker run -d \
   -e YYB_ADMIN_PASSWORD='YourStrongPasswordHere' \
   -e TZ=Asia/Shanghai \
   -v yyb-go-data:/app/data \
+  --log-driver json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   --restart unless-stopped \
   joey772/yyb-go:latest
 ```
+
+镜像默认设置 `YYB_ACCESS_LOG=errors`，健康检查、静态资源和普通成功请求不会写入容器日志，仅保留 5xx 错误和超过 2 秒的慢请求。需要调整时可在 `docker run` 中覆盖：`all` 输出全部访问日志，`errors` 输出错误和慢请求，`off` 关闭访问日志。Docker 日志轮转限制为单文件 10 MB、最多 3 个文件。
 
 <br />
 
@@ -115,6 +120,9 @@ docker run -d \
   -e YYB_ADMIN_PASSWORD='YourStrongPasswordHere' \
   -e TZ=Asia/Shanghai \
   -v yyb-go-data:/app/data \
+  --log-driver json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   --restart unless-stopped \
   joey772/yyb-go:latest
 ```

@@ -19,6 +19,7 @@ const testAdminPass = "test-password-123"
 func newTestApp(t *testing.T) (*App, http.Handler) {
 	t.Helper()
 	t.Setenv("GIN_MODE", "test")
+	t.Setenv(accessLogEnv, "off")
 	t.Setenv("YYB_ADMIN_USER", testAdminUser)
 	t.Setenv("YYB_ADMIN_PASSWORD", testAdminPass)
 
@@ -161,10 +162,28 @@ func TestHandlerServesGinRoutesAndSwaggerDocs(t *testing.T) {
 	if !ok {
 		t.Fatalf("OpenAPI paths missing or invalid")
 	}
-	for _, path := range []string{"/auth/login", "/auth/logout", "/auth/me", "/auth/password", "/auth/token", "/wxapp/getCode", "/wxapp/getPhoneNumber", "/wxapp/operateWxData", "/accounts/avatar"} {
+	for _, path := range []string{"/auth/login", "/auth/logout", "/auth/me", "/auth/password", "/auth/token", "/wxapp/getCode", "/wxapp/getPhoneNumber", "/wxapp/operateWxData", "/accounts/avatar", "/dashboard/metrics"} {
 		if _, ok := paths[path]; !ok {
 			t.Fatalf("OpenAPI path %s missing", path)
 		}
+	}
+	dashboard := authedRequest(handler, cookie, http.MethodGet, "/dashboard/metrics?period=day", nil)
+	if dashboard.Code != http.StatusOK {
+		t.Fatalf("GET /dashboard/metrics status = %d, body = %s", dashboard.Code, dashboard.Body.String())
+	}
+	var dashboardBody struct {
+		Data struct {
+			Metrics struct {
+				Period  string `json:"period"`
+				Buckets []any  `json:"buckets"`
+			} `json:"metrics"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(dashboard.Body.Bytes(), &dashboardBody); err != nil {
+		t.Fatalf("decode dashboard metrics: %v", err)
+	}
+	if dashboardBody.Data.Metrics.Period != "day" || len(dashboardBody.Data.Metrics.Buckets) != 24 {
+		t.Fatalf("dashboard metrics = %#v", dashboardBody.Data.Metrics)
 	}
 	for _, path := range []string{"/wxapp/getCode", "/wxapp/getPhoneNumber", "/wxapp/operateWxData"} {
 		pathItem := paths[path].(map[string]any)

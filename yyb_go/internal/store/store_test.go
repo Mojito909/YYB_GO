@@ -87,3 +87,34 @@ VALUES(7, 1, 12345, '', '{"ready":true}', ?, 20, 20);
 		t.Fatalf("session blob = %#v", session.SessionBlob)
 	}
 }
+
+func TestGetAPIMetricsBucketsCallsAndLatency(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+	for _, item := range []APICallLog{
+		{Endpoint: "/wxapp/getCode", Method: "POST", ClientIP: "10.0.0.1", AppID: "wx-a", StatusCode: 200, Success: true, DurationMS: 100, CreatedAt: now.Add(-2 * time.Hour).Unix()},
+		{Endpoint: "/wxapp/getCode", Method: "POST", ClientIP: "10.0.0.2", AppID: "wx-b", StatusCode: 502, Success: false, DurationMS: 900, CreatedAt: now.Add(-time.Hour).Unix()},
+	} {
+		if err := db.RecordAPICall(ctx, item); err != nil {
+			t.Fatalf("RecordAPICall() error = %v", err)
+		}
+	}
+	metrics, err := db.GetAPIMetrics(ctx, "day", now)
+	if err != nil {
+		t.Fatalf("GetAPIMetrics() error = %v", err)
+	}
+	if metrics.Calls != 2 || metrics.Success != 1 || metrics.Failed != 1 || metrics.UniqueIPs != 2 {
+		t.Fatalf("metrics = %#v", metrics)
+	}
+	if metrics.AvgDurationMS != 500 || metrics.P95DurationMS != 900 {
+		t.Fatalf("latency avg=%v p95=%v", metrics.AvgDurationMS, metrics.P95DurationMS)
+	}
+	if len(metrics.Buckets) != 24 {
+		t.Fatalf("bucket count = %d, want 24", len(metrics.Buckets))
+	}
+}

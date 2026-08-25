@@ -17,8 +17,18 @@ func newOpenAPISpec() map[string]any {
 			{"name": "qr", "description": "微信扫码登录"},
 			{"name": "accounts", "description": "已保存的微信账号"},
 			{"name": "wxapp", "description": "wxapp 业务接口调用"},
+			{"name": "dashboard", "description": "控制台总览统计"},
 		},
 		"paths": map[string]any{
+			"/dashboard/metrics": map[string]any{
+				"get": openAPIOperation(
+					[]string{"dashboard"},
+					"查询总览调用趋势和运行时指标",
+					[]map[string]any{queryStringParam("period", "统计范围：day / week / month。", false)},
+					nil,
+					defaulted(map[string]any{"200": jsonResponse("总览统计数据。", freeFormObjectSchema("调用趋势与 Go 运行时指标。"))}),
+				),
+			},
 			"/health": map[string]any{
 				"get": openAPIOperation(
 					[]string{"health"},

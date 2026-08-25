@@ -123,6 +123,46 @@
             </div>
           </div>
 
+          <section class="dashboard-toolbar" aria-label="调用趋势筛选">
+            <div>
+              <span class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>服务概览</span>
+              <p class="dashboard-caption">调用量、稳定性和运行时状态</p>
+            </div>
+            <div class="period-tabs" role="tablist" aria-label="统计时间范围">
+              <button class="period-tab active" type="button" role="tab" aria-selected="true" data-period="day">日</button>
+              <button class="period-tab" type="button" role="tab" aria-selected="false" data-period="week">周</button>
+              <button class="period-tab" type="button" role="tab" aria-selected="false" data-period="month">月</button>
+            </div>
+          </section>
+
+          <div class="metric-grid" aria-live="polite">
+            <div class="metric-card"><span class="stat-label">调用次数</span><strong class="metric-value tnum" id="metricCalls">—</strong><span class="metric-hint" id="metricCallsHint">最近 24 小时</span></div>
+            <div class="metric-card"><span class="stat-label">成功率</span><strong class="metric-value tnum" id="metricSuccessRate">—</strong><span class="metric-hint" id="metricSuccessHint">暂无请求</span></div>
+            <div class="metric-card"><span class="stat-label">独立 IP</span><strong class="metric-value tnum" id="metricIPs">—</strong><span class="metric-hint">去重客户端地址</span></div>
+            <div class="metric-card"><span class="stat-label">平均耗时</span><strong class="metric-value tnum" id="metricAvg">—</strong><span class="metric-hint" id="metricP95">P95 —</span></div>
+          </div>
+
+          <div class="dashboard-grid">
+            <section class="panel trend-panel">
+              <div class="section-head"><div><h2 class="section-title">调用趋势</h2><p class="section-note" id="trendDescription">按小时统计最近 24 小时</p></div><span class="eyebrow" id="trendTotal">0 次</span></div>
+              <div class="panel-body">
+                <div class="trend-chart" id="trendChart" role="img" aria-label="接口调用趋势图"></div>
+                <div class="trend-axis" id="trendAxis" aria-hidden="true"></div>
+                <div class="trend-legend"><span><i class="legend-swatch calls" aria-hidden="true"></i>总调用</span><span><i class="legend-swatch failed" aria-hidden="true"></i>失败</span></div>
+              </div>
+            </section>
+            <section class="panel runtime-panel">
+              <div class="section-head"><div><h2 class="section-title">系统性能</h2><p class="section-note">当前进程运行时指标</p></div><span class="status-pill ok" id="runtimeStatus"><span class="status-dot" aria-hidden="true"></span><span id="runtimeStatusText">正常</span></span></div>
+              <div class="panel-body runtime-body">
+                <div class="runtime-row"><span>运行时长</span><strong class="tnum" id="runtimeUptime">—</strong></div>
+                <div class="runtime-row"><span>内存占用</span><strong class="tnum" id="runtimeMemory">—</strong></div>
+                <div class="runtime-row"><span>协程数量</span><strong class="tnum" id="runtimeGoroutines">—</strong></div>
+                <div class="runtime-row"><span>GC 次数</span><strong class="tnum" id="runtimeGC">—</strong></div>
+                <div class="runtime-foot"><span>数据每 15 秒刷新</span><span class="pulse-dot" aria-hidden="true"></span></div>
+              </div>
+            </section>
+          </div>
+
           <div class="overview-grid">
             <section class="panel">
               <div class="section-head">
@@ -136,10 +176,11 @@
                   <span class="dist-seg unknown" id="distUnknown"></span>
                 </div>
                 <ul class="dist-legend" id="distLegend" aria-live="polite">
-                  <li><span class="dist-key alive" aria-hidden="true"></span>可用<b class="tnum" id="legendAlive">0</b></li>
-                  <li><span class="dist-key expired" aria-hidden="true"></span>需重扫<b class="tnum" id="legendExpired">0</b></li>
-                  <li><span class="dist-key unknown" aria-hidden="true"></span>待确认<b class="tnum" id="legendUnknown">0</b></li>
+                  <li><span class="dist-key alive" aria-hidden="true"></span><span>可用</span><b class="tnum" id="legendAlive">0</b><em id="legendAlivePct">0%</em></li>
+                  <li><span class="dist-key expired" aria-hidden="true"></span><span>需重扫</span><b class="tnum" id="legendExpired">0</b><em id="legendExpiredPct">0%</em></li>
+                  <li><span class="dist-key unknown" aria-hidden="true"></span><span>待确认</span><b class="tnum" id="legendUnknown">0</b><em id="legendUnknownPct">0%</em></li>
                 </ul>
+                <div class="dist-summary"><span>账号健康度</span><strong class="tnum" id="accountHealthScore">—</strong><span id="accountHealthHint">等待账号数据</span></div>
               </div>
             </section>
 
@@ -148,15 +189,12 @@
                 <h2 class="section-title">快捷维护</h2>
               </div>
               <div class="panel-body">
-                <p class="panel-note">批量操作会对全部账号生效，结果可在「能力调用」视图查看。</p>
-                <div class="inline-actions">
-                  <button class="btn secondary" id="refreshAllBtn" type="button">
-                    <span class="btn-icon" aria-hidden="true">↻</span> 刷新存活
-                  </button>
-                  <button class="btn secondary" id="resyncAllBtn" type="button">
-                    <span class="btn-icon" aria-hidden="true">⇄</span> 同步资料
-                  </button>
+                <p class="panel-note">批量操作会对全部账号生效，适合登录状态检查和资料同步。</p>
+                <div class="maintenance-list">
+                  <div class="maintenance-item"><span class="maintenance-icon" aria-hidden="true">↻</span><span><strong>刷新存活</strong><small>检查全部账号凭证状态</small></span><button class="btn secondary sm" id="refreshAllBtn" type="button">执行</button></div>
+                  <div class="maintenance-item"><span class="maintenance-icon" aria-hidden="true">⇄</span><span><strong>同步资料</strong><small>更新昵称、头像和用户资料</small></span><button class="btn secondary sm" id="resyncAllBtn" type="button">执行</button></div>
                 </div>
+                <div class="maintenance-foot"><span class="eyebrow">建议定期维护</span><a href="#accounts">查看账号列表 →</a></div>
               </div>
             </section>
           </div>
@@ -165,11 +203,15 @@
         <section class="view hidden" id="view-accounts" data-view="accounts">
           <section class="panel">
             <div class="section-head">
-              <h2 class="section-title">账号列表</h2>
+              <div class="section-heading-group">
+                <h2 class="section-title">账号列表</h2>
+                <span class="section-sub" id="accountResultCount">0 个结果</span>
+              </div>
               <div class="inline-actions">
                 <button class="btn secondary sm" id="reloadAccountsBtn" type="button">
                   <span class="btn-icon" aria-hidden="true">↻</span> 重新加载
                 </button>
+                <a class="btn primary sm" href="/scan"><span class="btn-icon" aria-hidden="true">＋</span> 添加账号</a>
               </div>
             </div>
             <div class="panel-body">
@@ -178,15 +220,23 @@
                   <label for="accountSearch">搜索账号</label>
                   <input class="input" id="accountSearch" type="search" placeholder="昵称 / 别名 / OpenID / UIN">
                 </div>
-                <div class="field">
-                  <label for="statusFilter">状态筛选</label>
-                  <select class="select" id="statusFilter">
-                    <option value="all">全部状态</option>
-                    <option value="alive">可用</option>
-                    <option value="expired">需重扫</option>
-                    <option value="unknown">待确认</option>
+                <div class="field account-sort-field">
+                  <label for="accountSort">排序</label>
+                  <select class="select" id="accountSort">
+                    <option value="updated">最近更新</option>
+                    <option value="name">名称</option>
+                    <option value="status">状态</option>
                   </select>
                 </div>
+              </div>
+              <div class="account-filter-row">
+                <div class="segmented-control" id="statusFilter" role="tablist" aria-label="账号状态筛选">
+                  <button class="segment active" type="button" role="tab" aria-selected="true" data-status="all">全部 <span class="tnum" id="filterCountAll">0</span></button>
+                  <button class="segment" type="button" role="tab" aria-selected="false" data-status="alive">可用 <span class="tnum" id="filterCountAlive">0</span></button>
+                  <button class="segment" type="button" role="tab" aria-selected="false" data-status="expired">需重扫 <span class="tnum" id="filterCountExpired">0</span></button>
+                  <button class="segment" type="button" role="tab" aria-selected="false" data-status="unknown">待确认 <span class="tnum" id="filterCountUnknown">0</span></button>
+                </div>
+                <span class="account-filter-hint" id="accountFilterHint">显示全部账号</span>
               </div>
               <div class="account-grid" id="accountGrid" aria-live="polite"></div>
             </div>
@@ -197,28 +247,32 @@
           <div class="call-grid">
             <section class="panel">
               <div class="section-head">
-                <h2 class="section-title">调用配置</h2>
+                <div><h2 class="section-title">发起调用</h2><p class="section-note">wxapp 请求参数</p></div>
+                <span class="eyebrow">步骤 1 / 2</span>
               </div>
               <div class="panel-body">
                 <div class="selected-account">
-                  <span class="stat-label">当前账号</span>
+                  <span class="selected-account-label"><span class="status-dot" aria-hidden="true"></span>当前账号</span>
                   <strong id="selectedAccountName">未选择</strong>
+                  <small id="selectedAccountHint">未绑定调用账号</small>
                 </div>
                 <div class="field">
-                  <label for="featureSel">能力</label>
+                  <label for="featureSel">选择能力</label>
                   <select class="select" id="featureSel"></select>
+                  <span class="field-hint" id="featureHint">接口参数</span>
                 </div>
                 <div class="field">
-                  <label for="appidInput">APPID</label>
-                  <input class="input" id="appidInput" type="text" placeholder="wx…" autocomplete="off">
+                  <label for="appidInput">小程序 APPID</label>
+                  <input class="input" id="appidInput" type="text" placeholder="例如 wx1234567890" autocomplete="off" spellcheck="false">
                 </div>
                 <div class="field hidden" id="payloadGroup">
                   <label for="payloadInput">请求 JSON</label>
-                  <textarea class="textarea" id="payloadInput" rows="6" placeholder='{"key":"value"}'></textarea>
+                  <textarea class="textarea code-input" id="payloadInput" rows="6" placeholder='{"key":"value"}' spellcheck="false"></textarea>
+                  <span class="field-hint">JSON 对象</span>
                 </div>
-                <div class="inline-actions">
+                <div class="call-actions">
                   <button class="btn primary" id="callBtn" type="button">
-                    <span class="btn-icon" aria-hidden="true">▷</span> 发起调用
+                    <span class="btn-icon" aria-hidden="true">▷</span> 发送请求
                   </button>
                   <button class="btn ghost" id="clearResultBtn" type="button">清空结果</button>
                 </div>
@@ -227,14 +281,15 @@
 
             <section class="panel">
               <div class="section-head">
-                <h2 class="section-title">调用结果</h2>
+                <div><h2 class="section-title">响应结果</h2><p class="section-note">JSON 响应与请求状态</p></div>
                 <div class="inline-actions">
-                  <span class="eyebrow" id="resultMeta">等待调用</span>
+                  <span class="result-status waiting" id="resultStatus"><span class="status-dot" aria-hidden="true"></span><span id="resultMeta">等待请求</span></span>
                   <button class="btn secondary sm" id="copyResultBtn" type="button">复制</button>
                 </div>
               </div>
               <div class="panel-body">
-                <pre class="code-block result-box" id="resultBox" aria-live="polite">尚未发起调用。</pre>
+                <div class="result-summary" id="resultSummary"><span>准备就绪</span><span class="tnum" id="resultDuration">—</span></div>
+                <pre class="code-block result-box" id="resultBox" aria-live="polite">暂无响应数据。</pre>
               </div>
             </section>
           </div>

@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -200,6 +202,25 @@ type APICallLogFilter struct {
 	Until   int64
 	Limit   int
 	Offset  int
+}
+
+type APIMetricBucket struct {
+	Label    string `json:"label"`
+	Calls    int64  `json:"calls"`
+	Success  int64  `json:"success"`
+	Failed   int64  `json:"failed"`
+}
+
+type APIMetrics struct {
+	Period        string            `json:"period"`
+	Calls         int64             `json:"calls"`
+	Success       int64             `json:"success"`
+	Failed        int64             `json:"failed"`
+	SuccessRate   float64           `json:"success_rate"`
+	UniqueIPs     int64             `json:"unique_ips"`
+	AvgDurationMS float64           `json:"avg_duration_ms"`
+	P95DurationMS int64             `json:"p95_duration_ms"`
+	Buckets       []APIMetricBucket `json:"buckets"`
 }
 
 func Open(path string) (*DB, error) {
@@ -828,6 +849,88 @@ func (db *DB) ClearAPICallLogs(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+func (db *DB) GetAPIMetrics(ctx context.Context, period string, now time.Time) (APIMetrics, error) {
+	if period != "day" && period != "week" && period != "month" {
+		period = "day"
+	}
+	window := 24 * time.Hour
+	bucketCount := 24
+	bucketSize := time.Hour
+	if period == "week" {
+		window, bucketCount, bucketSize = 7*24*time.Hour, 7, 24*time.Hour
+	} else if period == "month" {
+		window, bucketCount, bucketSize = 30*24*time.Hour, 30, 24*time.Hour
+	}
+	start := now.Add(-window)
+	buckets := make([]APIMetricBucket, bucketCount)
+	for i := range buckets {
+		at := start.Add(time.Duration(i) * bucketSize)
+		if period == "day" {
+			buckets[i].Label = at.Format("15:04")
+		} else {
+			buckets[i].Label = at.Format("01/02")
+		}
+	}
+	rows, err := db.sql.QueryContext(ctx, `SELECT created_at, success, duration_ms, client_ip
+		FROM api_call_logs WHERE created_at >= ? AND created_at <= ? ORDER BY created_at ASC`, start.Unix(), now.Unix())
+	if err != nil {
+		return APIMetrics{}, err
+	}
+	defer rows.Close()
+	metrics := APIMetrics{Period: period, Buckets: buckets}
+	ips := make(map[string]struct{})
+	durations := make([]int64, 0)
+	var durationTotal int64
+	for rows.Next() {
+		var createdAt int64
+		var success int
+		var duration int64
+		var ip string
+		if err := rows.Scan(&createdAt, &success, &duration, &ip); err != nil {
+			return APIMetrics{}, err
+		}
+		metrics.Calls++
+		if success != 0 {
+			metrics.Success++
+		} else {
+			metrics.Failed++
+		}
+		if ip != "" {
+			ips[ip] = struct{}{}
+		}
+		durationTotal += duration
+		durations = append(durations, duration)
+		index := int(time.Unix(createdAt, 0).Sub(start) / bucketSize)
+		if index < 0 {
+			index = 0
+		}
+		if index >= bucketCount {
+			index = bucketCount - 1
+		}
+		buckets[index].Calls++
+		if success != 0 {
+			buckets[index].Success++
+		} else {
+			buckets[index].Failed++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return APIMetrics{}, err
+	}
+	metrics.UniqueIPs = int64(len(ips))
+	if metrics.Calls > 0 {
+		metrics.SuccessRate = float64(metrics.Success) / float64(metrics.Calls) * 100
+		metrics.AvgDurationMS = float64(durationTotal) / float64(metrics.Calls)
+		sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+		index := int(math.Ceil(float64(len(durations))*0.95)) - 1
+		if index < 0 {
+			index = 0
+		}
+		metrics.P95DurationMS = durations[index]
+	}
+	return metrics, nil
 }
 
 func boolInt(value bool) int {

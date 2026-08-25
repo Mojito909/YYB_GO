@@ -33,7 +33,8 @@ COPY yyb_go/resource/ /app/resource/
 
 RUN chown -R yyb:yyb /app
 
-ENV GIN_MODE=release
+ENV GIN_MODE=release \
+    YYB_ACCESS_LOG=errors
 
 USER yyb
 EXPOSE 8000
