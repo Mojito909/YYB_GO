@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -71,6 +72,30 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_api_tokens_username ON api_tokens(username);
 CREATE INDEX IF NOT EXISTS idx_api_tokens_account ON api_tokens(account_id);
+
+CREATE TABLE IF NOT EXISTS api_log_settings (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    retention_days INTEGER NOT NULL DEFAULT 7 CHECK (retention_days IN (3, 7, 15, 30)),
+    updated_at    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_call_logs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id     INTEGER REFERENCES wechat_accounts(id) ON DELETE SET NULL,
+    account_ref    TEXT NOT NULL DEFAULT '',
+    endpoint       TEXT NOT NULL,
+    method         TEXT NOT NULL,
+    client_ip      TEXT NOT NULL DEFAULT '',
+    program        TEXT NOT NULL DEFAULT '',
+    status_code    INTEGER NOT NULL DEFAULT 200,
+    success        INTEGER NOT NULL DEFAULT 1,
+    duration_ms    INTEGER NOT NULL DEFAULT 0,
+    error_message  TEXT NOT NULL DEFAULT '',
+    created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_api_logs_created ON api_call_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_api_logs_ip ON api_call_logs(client_ip);
+CREATE INDEX IF NOT EXISTS idx_api_logs_endpoint ON api_call_logs(endpoint);
 `
 
 var defaultFeatures = []Feature{
@@ -144,6 +169,38 @@ type APITokenMeta struct {
 	LastUsedAt *int64
 }
 
+type APILogSettings struct {
+	RetentionDays int   `json:"retention_days"`
+	UpdatedAt     int64 `json:"updated_at"`
+}
+
+type APICallLog struct {
+	ID           int64  `json:"id"`
+	AccountID    *int64 `json:"account_id,omitempty"`
+	AccountRef   string `json:"account_ref"`
+	AccountName  string `json:"account_name,omitempty"`
+	Endpoint     string `json:"endpoint"`
+	Method       string `json:"method"`
+	ClientIP     string `json:"client_ip"`
+	Program      string `json:"program"`
+	StatusCode   int    `json:"status_code"`
+	Success      bool   `json:"success"`
+	DurationMS   int64  `json:"duration_ms"`
+	ErrorMessage string `json:"error_message,omitempty"`
+	CreatedAt    int64  `json:"created_at"`
+}
+
+type APICallLogFilter struct {
+	Keyword string
+	IP      string
+	Path    string
+	Status  string
+	Since   int64
+	Until   int64
+	Limit   int
+	Offset  int
+}
+
 func Open(path string) (*DB, error) {
 	if path != ":memory:" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -184,6 +241,11 @@ func Open(path string) (*DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err = out.ensureAPILogSettings(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	_, _ = out.PruneAPICallLogs(ctx)
 	return out, nil
 }
 
@@ -615,6 +677,146 @@ func (db *DB) ActiveAPITokenMeta(ctx context.Context, username string, accountID
 		meta.LastUsedAt = &lastUsed.Int64
 	}
 	return &meta, nil
+}
+
+func (db *DB) ensureAPILogSettings(ctx context.Context) error {
+	_, err := db.sql.ExecContext(ctx,
+		"INSERT OR IGNORE INTO api_log_settings(id, retention_days, updated_at) VALUES(1, 7, ?)", time.Now().Unix())
+	return err
+}
+
+func (db *DB) GetAPILogSettings(ctx context.Context) (APILogSettings, error) {
+	var out APILogSettings
+	err := db.sql.QueryRowContext(ctx, "SELECT retention_days, updated_at FROM api_log_settings WHERE id=1").Scan(&out.RetentionDays, &out.UpdatedAt)
+	return out, err
+}
+
+func (db *DB) SetAPILogRetention(ctx context.Context, days int) (APILogSettings, error) {
+	if days != 3 && days != 7 && days != 15 && days != 30 {
+		return APILogSettings{}, fmt.Errorf("retention_days must be one of 3, 7, 15, 30")
+	}
+	now := time.Now().Unix()
+	if _, err := db.sql.ExecContext(ctx, "UPDATE api_log_settings SET retention_days=?, updated_at=? WHERE id=1", days, now); err != nil {
+		return APILogSettings{}, err
+	}
+	if _, err := db.PruneAPICallLogs(ctx); err != nil {
+		return APILogSettings{}, err
+	}
+	return APILogSettings{RetentionDays: days, UpdatedAt: now}, nil
+}
+
+func (db *DB) RecordAPICall(ctx context.Context, log APICallLog) error {
+	_, err := db.sql.ExecContext(ctx, `INSERT INTO api_call_logs
+		(account_id, account_ref, endpoint, method, client_ip, program, status_code, success, duration_ms, error_message, created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		log.AccountID, log.AccountRef, log.Endpoint, log.Method, log.ClientIP, log.Program,
+		log.StatusCode, boolInt(log.Success), log.DurationMS, log.ErrorMessage, log.CreatedAt)
+	if err != nil {
+		return err
+	}
+	_, err = db.PruneAPICallLogs(ctx)
+	return err
+}
+
+func (db *DB) PruneAPICallLogs(ctx context.Context) (int64, error) {
+	var days int
+	if err := db.sql.QueryRowContext(ctx, "SELECT retention_days FROM api_log_settings WHERE id=1").Scan(&days); err != nil {
+		return 0, err
+	}
+	result, err := db.sql.ExecContext(ctx, "DELETE FROM api_call_logs WHERE created_at < ?", time.Now().Add(-time.Duration(days)*24*time.Hour).Unix())
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (db *DB) ListAPICallLogs(ctx context.Context, filter APICallLogFilter) ([]APICallLog, int64, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	where := []string{"1=1"}
+	args := make([]any, 0, 8)
+	if filter.Keyword != "" {
+		where = append(where, "(l.account_ref LIKE ? OR l.endpoint LIKE ? OR l.program LIKE ? OR COALESCE(a.nickname, '') LIKE ? OR COALESCE(a.alias, '') LIKE ?)")
+		kw := "%" + filter.Keyword + "%"
+		args = append(args, kw, kw, kw, kw, kw)
+	}
+	if filter.IP != "" {
+		where = append(where, "l.client_ip LIKE ?")
+		args = append(args, "%"+filter.IP+"%")
+	}
+	if filter.Path != "" {
+		where = append(where, "l.endpoint = ?")
+		args = append(args, filter.Path)
+	}
+	if filter.Status == "success" {
+		where = append(where, "l.success=1")
+	} else if filter.Status == "error" {
+		where = append(where, "l.success=0")
+	}
+	if filter.Since > 0 {
+		where = append(where, "l.created_at >= ?")
+		args = append(args, filter.Since)
+	}
+	if filter.Until > 0 {
+		where = append(where, "l.created_at <= ?")
+		args = append(args, filter.Until)
+	}
+	whereSQL := strings.Join(where, " AND ")
+	var total int64
+	countArgs := append([]any(nil), args...)
+	if err := db.sql.QueryRowContext(ctx, "SELECT COUNT(*) FROM api_call_logs l LEFT JOIN wechat_accounts a ON a.id=l.account_id WHERE "+whereSQL, countArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, limit, filter.Offset)
+	rows, err := db.sql.QueryContext(ctx, `SELECT l.id, l.account_id, l.account_ref,
+		COALESCE(a.nickname, a.alias, ''), l.endpoint, l.method, l.client_ip, l.program,
+		l.status_code, l.success, l.duration_ms, l.error_message, l.created_at
+		FROM api_call_logs l LEFT JOIN wechat_accounts a ON a.id=l.account_id
+		WHERE `+whereSQL+` ORDER BY l.created_at DESC, l.id DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]APICallLog, 0)
+	for rows.Next() {
+		var item APICallLog
+		var accountID sql.NullInt64
+		var success int
+		if err := rows.Scan(&item.ID, &accountID, &item.AccountRef, &item.AccountName, &item.Endpoint, &item.Method, &item.ClientIP, &item.Program, &item.StatusCode, &success, &item.DurationMS, &item.ErrorMessage, &item.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		if accountID.Valid {
+			item.AccountID = &accountID.Int64
+		}
+		item.Success = success != 0
+		out = append(out, item)
+	}
+	return out, total, rows.Err()
+}
+
+func (db *DB) DeleteAPICallLog(ctx context.Context, id int64) error {
+	_, err := db.sql.ExecContext(ctx, "DELETE FROM api_call_logs WHERE id=?", id)
+	return err
+}
+
+func (db *DB) ClearAPICallLogs(ctx context.Context) (int64, error) {
+	result, err := db.sql.ExecContext(ctx, "DELETE FROM api_call_logs")
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (a *WechatAccount) Public() AccountPublic {

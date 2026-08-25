@@ -15,6 +15,22 @@
 
 ## [Unreleased]
 
+### Planned
+
+#### 青龙集成
+
+- 增加独立的青龙脚本示例目录。
+- 增加二维码 Base64 获取和通知渠道推送示例。
+- 增加青龙定时任务的账号存活检查与失败重试模板。
+
+#### 部署
+
+- 增加 Docker Compose 示例。
+- 增加健康检查、优雅停止和持久化目录说明。
+- 增加常见代理和容器网络配置示例。
+
+## [0.2.2] - 2026-08-25
+
 ### Added
 
 #### Docker 与 CI
@@ -38,6 +54,15 @@
 - 补充青龙脚本取 code 的接入方式：改用 `POST /wxapp/getCode` 并携带 `Authorization: Bearer TOKEN`。
 - 约定脚本侧环境变量：`YYB_BASE`（服务地址）、`YYB_TOKEN`（API 令牌）、`YYB_ACCOUNTS`（账号标识，逗号分隔，取 id / uin / openid 任一）。
 - 说明容器网络注意事项：青龙运行在 Docker 内时 `YYB_BASE` 不能填 `127.0.0.1`。
+
+#### 接口日志
+
+- 增加 `/wxapp/` 路径请求的审计中间件，自动记录调用账号、客户端 IP、程序标识（`X-Program` 头或 `User-Agent`）、状态码、成功/失败和耗时。
+- 增加 `api_call_logs` 表和 `api_log_settings` 表，启动时自动建表并清理过期日志。
+- 增加 `GET /api-logs` 查询接口，支持关键字搜索、IP 过滤、状态筛选和时间范围分页查询。
+- 增加 `DELETE /api-logs` 清空全部日志和 `DELETE /api-logs/:id` 删除单条日志。
+- 增加 `GET /api-logs/settings` 和 `PATCH /api-logs/settings` 查询与更新日志保留周期（3 / 7 / 15 / 30 天可选）。
+- 控制台新增「接口日志」视图：统计卡片（记录总数、成功率、调用 IP 数、保留周期）、日志表格（时间、接口、账号、调用 IP、程序、状态、耗时）、搜索 / IP / 状态筛选、分页导航、每 10 秒自动刷新、单条删除与清空。
 
 ### Changed
 
@@ -79,19 +104,10 @@
 
 - `/static` 下的资源返回 `Cache-Control: no-cache`，避免浏览器启发式缓存复用旧的 `console.js`/`console.css`。
 
-### Planned
+#### 文档
 
-#### 青龙集成
-
-- 增加独立的青龙脚本示例目录。
-- 增加二维码 Base64 获取和通知渠道推送示例。
-- 增加青龙定时任务的账号存活检查与失败重试模板。
-
-#### 部署
-
-- 增加 Docker Compose 示例。
-- 增加健康检查、优雅停止和持久化目录说明。
-- 增加常见代理和容器网络配置示例。
+- 修复 README 中 Markdown 链接未用尖括号包裹导致渲染异常的问题。
+- 精简 README 中 Docker 数据卷的重复说明。
 
 ## [0.2.1] - 2026-08-23
 

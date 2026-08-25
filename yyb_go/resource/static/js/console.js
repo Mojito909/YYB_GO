@@ -12,7 +12,9 @@ const state = {
   lastResult: "",
   searchKeyword: "",
   statusFilter: "all",
-  drawerOpenID: ""
+  drawerOpenID: "",
+  logs: { items: [], total: 0, offset: 0, limit: 50, retentionDays: 7 },
+  logRefreshTimer: null
 };
 
 const $ = id => document.getElementById(id);
@@ -270,6 +272,7 @@ const VIEWS = {
   overview: { title: "总览", subtitle: "账号状态与常用维护动作" },
   accounts: { title: "账号管理", subtitle: "搜索、查看详情与删除账号" },
   call: { title: "能力调用", subtitle: "选择账号并调用 wxapp 接口" },
+  "api-logs": { title: "接口日志", subtitle: "实时查看调用 IP、程序、状态与耗时" },
   system: { title: "系统", subtitle: "文档入口与最近活动" }
 };
 
@@ -291,6 +294,87 @@ function showView(name) {
   });
   $("viewTitle").textContent = VIEWS[view].title;
   $("viewSubtitle").textContent = VIEWS[view].subtitle;
+  if (view === "api-logs") {
+    loadAPILogs();
+    if (!state.logRefreshTimer) state.logRefreshTimer = setInterval(() => {
+      if (activeViewFromHash() === "api-logs") loadAPILogs(true);
+    }, 10000);
+  } else if (state.logRefreshTimer) {
+    clearInterval(state.logRefreshTimer);
+    state.logRefreshTimer = null;
+  }
+}
+
+function formatLogTime(unix) {
+  return unix ? new Date(unix * 1000).toLocaleString("zh-CN", { hour12: false }) : "—";
+}
+
+function logQuery() {
+  const params = new URLSearchParams({ limit: String(state.logs.limit), offset: String(state.logs.offset) });
+  const q = $("logSearch").value.trim();
+  const ip = $("logIPFilter").value.trim();
+  const status = $("logStatusFilter").value;
+  if (q) params.set("q", q);
+  if (ip) params.set("ip", ip);
+  if (status !== "all") params.set("status", status);
+  return params.toString();
+}
+
+function renderAPILogs() {
+  const { items, total, offset, limit } = state.logs;
+  const body = $("logTableBody");
+  const successCount = items.filter(item => item.success).length;
+  const ips = new Set(items.map(item => item.client_ip).filter(Boolean));
+  $("logTotal").textContent = String(total);
+  $("logSuccessRate").textContent = items.length ? `${Math.round(successCount / items.length * 100)}%` : "—";
+  $("logIPCount").textContent = String(ips.size);
+  $("logRetentionLabel").textContent = `${state.logs.retentionDays} 天`;
+  $("logRetentionSelect").value = String(state.logs.retentionDays);
+  $("logSummary").textContent = total ? `显示 ${offset + 1}–${Math.min(offset + items.length, total)} / 共 ${total} 条` : "暂无记录";
+  $("logPrevBtn").disabled = offset <= 0;
+  $("logNextBtn").disabled = offset + items.length >= total;
+  if (!items.length) { body.innerHTML = `<tr><td colspan="8" class="log-empty">暂无接口日志</td></tr>`; return; }
+  body.innerHTML = items.map(item => `<tr>
+    <td class="tnum log-time">${escapeHTML(formatLogTime(item.created_at))}</td>
+    <td><code>${escapeHTML(item.method)} ${escapeHTML(item.endpoint)}</code></td>
+    <td>${escapeHTML(item.account_name || item.account_ref || "—")}</td>
+    <td class="tnum">${escapeHTML(item.client_ip || "—")}</td>
+    <td class="log-program" title="${escapeHTML(item.program)}">${escapeHTML(item.program || "—")}</td>
+    <td><span class="log-status ${item.success ? "ok" : "bad"}">${item.status_code} ${item.success ? "成功" : "失败"}</span></td>
+    <td class="tnum">${item.duration_ms} ms</td>
+    <td><button class="btn ghost sm" type="button" data-delete-log="${item.id}">删除</button></td>
+  </tr>`).join("");
+  body.querySelectorAll("[data-delete-log]").forEach(button => button.addEventListener("click", async () => {
+    if (!window.confirm("确定删除这条接口日志吗？")) return;
+    try { await api("DELETE", `/api-logs/${button.dataset.deleteLog}`); Toast.success("记录已删除"); await loadAPILogs(true); }
+    catch (error) { Toast.error("删除失败：" + error.message); }
+  }));
+}
+
+async function loadAPILogs(silent = false) {
+  try {
+    const result = await api("GET", `/api-logs?${logQuery()}`);
+    state.logs.items = result.items || [];
+    state.logs.total = Number(result.total || 0);
+    state.logs.retentionDays = Number(result.retention_days || 7);
+    renderAPILogs();
+  } catch (error) { if (!silent) Toast.error("加载接口日志失败：" + error.message); }
+}
+
+function setupAPILogs() {
+  ["logSearch", "logIPFilter", "logStatusFilter"].forEach(id => $(id).addEventListener("input", () => { state.logs.offset = 0; loadAPILogs(); }));
+  $("reloadLogsBtn").addEventListener("click", () => loadAPILogs());
+  $("logPrevBtn").addEventListener("click", () => { state.logs.offset = Math.max(0, state.logs.offset - state.logs.limit); loadAPILogs(); });
+  $("logNextBtn").addEventListener("click", () => { state.logs.offset += state.logs.limit; loadAPILogs(); });
+  $("logRetentionSelect").addEventListener("change", async event => {
+    try { await api("PATCH", "/api-logs/settings", { retention_days: Number(event.target.value) }); state.logs.offset = 0; await loadAPILogs(); Toast.success("保留周期已更新"); }
+    catch (error) { Toast.error("更新保留周期失败：" + error.message); }
+  });
+  $("clearLogsBtn").addEventListener("click", async () => {
+    if (!window.confirm("确定清空全部接口日志吗？此操作不可恢复。")) return;
+    try { await api("DELETE", "/api-logs"); state.logs.offset = 0; await loadAPILogs(); Toast.success("接口日志已清空"); }
+    catch (error) { Toast.error("清空失败：" + error.message); }
+  });
 }
 
 function setupSidebar() {
@@ -710,6 +794,7 @@ $("statusFilter").addEventListener("change", e => {
 });
 
 setupSidebar();
+setupAPILogs();
 Theme.bindButton($("themeBtn"));
 setupUserMenu();
 setupDrawer();

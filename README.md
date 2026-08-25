@@ -6,7 +6,7 @@
 
 本项目基于原作者项目进行二次开发：
 
-- 原作者项目：[SuperNaiBA/YYB_GO](https://github.com/SuperNaiBA/YYB_GO)
+- 原作者项目：[SuperNaiBA/YYB\_GO](https://github.com/SuperNaiBA/YYB_GO)
 - 当前项目：在原项目基础上进行功能扩展、架构整理和管理端优化
 
 感谢原作者对相关协议和应用能力调用的探索与实现。
@@ -36,10 +36,10 @@ go run ./cmd/yyb-go -host 127.0.0.1 -port 8000
 
 启动后访问：
 
-- 控制台：http://127.0.0.1:8000/
-- 登录页：http://127.0.0.1:8000/login
-- 扫码页：http://127.0.0.1:8000/scan
-- 接口文档：http://127.0.0.1:8000/docs/index.html
+- 控制台：<http://127.0.0.1:8000/>
+- 登录页：<http://127.0.0.1:8000/login>
+- 扫码页：<http://127.0.0.1:8000/scan>
+- 接口文档：<http://127.0.0.1:8000/docs/index.html>
 
 如果未设置 `YYB_ADMIN_PASSWORD`，首次启动会生成随机密码并输出到日志。
 
@@ -100,9 +100,7 @@ docker run -d \
   joey772/yyb-go:latest
 ```
 
-`/app/data` 用于持久化数据库、账号头像和扫码图片；页面资源在镜像内的 `/app/resource`，随镜像更新。
-
-> 不要把卷挂到 `/app/resource`。该目录下是 `static/` 和 `templates/`，一旦被命名卷覆盖，容器会一直使用首次创建卷时的旧页面，`docker pull` 新镜像也不会生效（表现为控制台缺少新功能，例如账号卡片上的「令牌」按钮）。
+<br />
 
 更新镜像：
 

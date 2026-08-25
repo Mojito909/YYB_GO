@@ -151,7 +151,7 @@ func (a *App) Handler() http.Handler {
 	static.StaticFS("/", http.Dir(a.resources.Static))
 
 	// 受保护路由：页面与全部业务 API
-	protected := router.Group("/", a.auth.ginMiddleware())
+	protected := router.Group("/", a.auth.ginMiddleware(), a.apiAuditMiddleware())
 	protected.Any("/", gin.WrapF(a.handleIndex))
 	protected.Any("/scan", gin.WrapF(a.handleScan))
 	protected.Any("/docs", func(c *gin.Context) {
@@ -168,6 +168,9 @@ func (a *App) Handler() http.Handler {
 	protected.Any("/wxapp/getCode", gin.WrapF(a.handleGetCode))
 	protected.Any("/wxapp/getPhoneNumber", gin.WrapF(a.handleGetPhoneNumber))
 	protected.Any("/wxapp/operateWxData", gin.WrapF(a.handleOperateWXData))
+	protected.Any("/api-logs", gin.WrapF(a.handleAPILogs))
+	protected.Any("/api-logs/settings", gin.WrapF(a.handleAPILogSettings))
+	protected.Any("/api-logs/:id", gin.WrapF(a.handleAPILogByID))
 	router.NoRoute(func(c *gin.Context) {
 		writeError(c.Writer, http.StatusNotFound, "not found")
 	})

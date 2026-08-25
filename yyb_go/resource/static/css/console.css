@@ -331,6 +331,31 @@
   font-size: 12.5px;
 }
 
+.log-toolbar { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(150px, 1fr) 130px 130px; gap: 12px; align-items: end; margin-bottom: 16px; }
+.log-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+.log-table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 12px; }
+.log-table th { padding: 10px 12px; text-align: left; background: var(--surface); color: var(--muted); font-size: 11px; font-weight: 650; white-space: nowrap; }
+.log-table td { padding: 11px 12px; border-top: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+.log-table tbody tr:hover { background: var(--surface); }
+.log-table code { color: var(--primary); font-family: var(--mono); font-size: 11px; }
+.log-time { color: var(--muted); }
+.log-program { max-width: 180px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.log-status { display: inline-flex; padding: 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 650; }
+.log-status.ok { background: var(--success-soft); color: var(--success); }
+.log-status.bad { background: var(--danger-soft); color: var(--danger); }
+.log-empty { padding: 32px 12px !important; text-align: center; color: var(--faint); }
+.log-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; color: var(--muted); font-size: 12px; }
+.section-note { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+
+@media (max-width: 900px) {
+  .log-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .log-toolbar { grid-template-columns: 1fr; }
+  .log-footer { align-items: flex-start; flex-direction: column; }
+}
+
 /* ---------- 抽屉内容 ---------- */
 
 .drawer-profile { display: flex; align-items: center; gap: 12px; }
