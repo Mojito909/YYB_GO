@@ -249,17 +249,18 @@
           </div>
           <section class="panel">
             <div class="section-head">
-              <div><h2 class="section-title">接口日志</h2><p class="section-note">查看时间、调用 IP、程序、接口、状态和耗时</p></div>
+              <div><h2 class="section-title">接口日志</h2><p class="section-note">查看时间、调用 IP、小程序 ID、接口、状态和耗时</p></div>
               <div class="inline-actions"><span class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>每 10 秒刷新</span><button class="btn secondary sm" id="reloadLogsBtn" type="button">↻ 刷新</button><button class="btn danger sm" id="clearLogsBtn" type="button">清空记录</button></div>
             </div>
             <div class="panel-body">
               <div class="log-toolbar">
-                <div class="field"><label for="logSearch">搜索</label><input class="input" id="logSearch" type="search" placeholder="账号 / 接口 / 程序"></div>
+                <div class="field"><label for="logSearch">搜索</label><input class="input" id="logSearch" type="search" placeholder="账号 / 接口 / 小程序 ID"></div>
                 <div class="field"><label for="logIPFilter">调用 IP</label><input class="input" id="logIPFilter" type="search" placeholder="例如 127.0.0.1"></div>
                 <div class="field"><label for="logStatusFilter">状态</label><select class="select" id="logStatusFilter"><option value="all">全部</option><option value="success">成功</option><option value="error">失败</option></select></div>
+                <div class="field"><label for="logPageSize">每页条数</label><select class="select" id="logPageSize"><option value="20" selected>20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></div>
                 <div class="field"><label for="logRetentionSelect">记录保留</label><select class="select" id="logRetentionSelect"><option value="3">3 天</option><option value="7">7 天</option><option value="15">15 天</option><option value="30">30 天</option></select></div>
               </div>
-              <div class="log-table-wrap"><table class="log-table"><thead><tr><th>时间</th><th>接口</th><th>账号</th><th>调用 IP</th><th>程序</th><th>状态</th><th>耗时</th><th aria-label="操作"></th></tr></thead><tbody id="logTableBody"></tbody></table></div>
+              <div class="log-table-wrap"><table class="log-table"><thead><tr><th>时间</th><th>接口</th><th>账号</th><th>调用 IP</th><th>小程序 ID</th><th>状态</th><th>耗时</th><th aria-label="操作"></th></tr></thead><tbody id="logTableBody"></tbody></table></div>
               <div class="log-footer"><span id="logSummary">暂无记录</span><div class="inline-actions"><button class="btn ghost sm" id="logPrevBtn" type="button">上一页</button><button class="btn ghost sm" id="logNextBtn" type="button">下一页</button></div></div>
             </div>
           </section>

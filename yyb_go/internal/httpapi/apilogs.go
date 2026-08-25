@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -25,6 +27,7 @@ func (a *App) apiAuditMiddleware() gin.HandlerFunc {
 		started := time.Now()
 		request := c.Request
 		accountRef, _ := requestRef(request)
+		appID := requestAppID(request)
 		accountID := int64(0)
 		if p, ok := principalFrom(request.Context()); ok && p.viaToken {
 			accountID = p.accountID
@@ -40,21 +43,14 @@ func (a *App) apiAuditMiddleware() gin.HandlerFunc {
 		if status == 0 {
 			status = http.StatusOK
 		}
-		program := strings.TrimSpace(request.Header.Get("X-Program"))
-		if program == "" {
-			program = strings.TrimSpace(request.UserAgent())
-		}
-		if program == "" {
-			program = "unknown"
-		}
-		if len(program) > 240 {
-			program = program[:240]
+		if len(appID) > 240 {
+			appID = appID[:240]
 		}
 		log := store.APICallLog{
 			Endpoint:   request.URL.Path,
 			Method:     request.Method,
 			ClientIP:   requestClientIP(request),
-			Program:    program,
+			AppID:      appID,
 			StatusCode: status,
 			Success:    status < 400,
 			DurationMS: time.Since(started).Milliseconds(),
@@ -70,6 +66,24 @@ func (a *App) apiAuditMiddleware() gin.HandlerFunc {
 		_ = a.db.RecordAPICall(ctx, log)
 		cancel()
 	}
+}
+
+func requestAppID(r *http.Request) string {
+	if r.Body == nil {
+		return ""
+	}
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return ""
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	var body struct {
+		AppID string `json:"app_id"`
+	}
+	if json.Unmarshal(raw, &body) != nil {
+		return ""
+	}
+	return strings.TrimSpace(body.AppID)
 }
 
 type auditResponseWriter struct {
@@ -116,7 +130,7 @@ func (a *App) handleAPILogs(w http.ResponseWriter, r *http.Request) {
 			IP:      strings.TrimSpace(r.URL.Query().Get("ip")),
 			Path:    strings.TrimSpace(r.URL.Query().Get("path")),
 			Status:  strings.TrimSpace(r.URL.Query().Get("status")),
-			Limit:   queryInt(r, "limit", 50),
+			Limit:   normalizeLogLimit(queryInt(r, "limit", 20)),
 			Offset:  queryInt(r, "offset", 0),
 			Since:   queryInt64(r, "since", 0),
 			Until:   queryInt64(r, "until", 0),
@@ -144,6 +158,15 @@ func (a *App) handleAPILogs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": count})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func normalizeLogLimit(value int) int {
+	switch value {
+	case 20, 50, 100:
+		return value
+	default:
+		return 20
 	}
 }
 

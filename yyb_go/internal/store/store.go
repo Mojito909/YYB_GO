@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS api_call_logs (
     account_ref    TEXT NOT NULL DEFAULT '',
     endpoint       TEXT NOT NULL,
     method         TEXT NOT NULL,
+    app_id         TEXT NOT NULL DEFAULT '',
     client_ip      TEXT NOT NULL DEFAULT '',
     program        TEXT NOT NULL DEFAULT '',
     status_code    INTEGER NOT NULL DEFAULT 200,
@@ -182,7 +183,7 @@ type APICallLog struct {
 	Endpoint     string `json:"endpoint"`
 	Method       string `json:"method"`
 	ClientIP     string `json:"client_ip"`
-	Program      string `json:"program"`
+	AppID        string `json:"app_id"`
 	StatusCode   int    `json:"status_code"`
 	Success      bool   `json:"success"`
 	DurationMS   int64  `json:"duration_ms"`
@@ -232,6 +233,10 @@ func Open(path string) (*DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err = migrateAPICallLogsTable(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err = db.ExecContext(ctx, schema); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -247,6 +252,19 @@ func Open(path string) (*DB, error) {
 	}
 	_, _ = out.PruneAPICallLogs(ctx)
 	return out, nil
+}
+
+func migrateAPICallLogsTable(ctx context.Context, db *sql.DB) error {
+	exists, err := sqliteTableExists(ctx, db, "api_call_logs")
+	if err != nil || !exists {
+		return err
+	}
+	hasAppID, err := sqliteColumnExists(ctx, db, "api_call_logs", "app_id")
+	if err != nil || hasAppID {
+		return err
+	}
+	_, err = db.ExecContext(ctx, "ALTER TABLE api_call_logs ADD COLUMN app_id TEXT NOT NULL DEFAULT ''")
+	return err
 }
 
 func (db *DB) Close() error {
@@ -707,9 +725,9 @@ func (db *DB) SetAPILogRetention(ctx context.Context, days int) (APILogSettings,
 
 func (db *DB) RecordAPICall(ctx context.Context, log APICallLog) error {
 	_, err := db.sql.ExecContext(ctx, `INSERT INTO api_call_logs
-		(account_id, account_ref, endpoint, method, client_ip, program, status_code, success, duration_ms, error_message, created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		log.AccountID, log.AccountRef, log.Endpoint, log.Method, log.ClientIP, log.Program,
+		(account_id, account_ref, endpoint, method, app_id, client_ip, program, status_code, success, duration_ms, error_message, created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		log.AccountID, log.AccountRef, log.Endpoint, log.Method, log.AppID, log.ClientIP, "",
 		log.StatusCode, boolInt(log.Success), log.DurationMS, log.ErrorMessage, log.CreatedAt)
 	if err != nil {
 		return err
@@ -732,8 +750,8 @@ func (db *DB) PruneAPICallLogs(ctx context.Context) (int64, error) {
 
 func (db *DB) ListAPICallLogs(ctx context.Context, filter APICallLogFilter) ([]APICallLog, int64, error) {
 	limit := filter.Limit
-	if limit <= 0 || limit > 200 {
-		limit = 50
+	if limit != 20 && limit != 50 && limit != 100 {
+		limit = 20
 	}
 	if filter.Offset < 0 {
 		filter.Offset = 0
@@ -741,7 +759,7 @@ func (db *DB) ListAPICallLogs(ctx context.Context, filter APICallLogFilter) ([]A
 	where := []string{"1=1"}
 	args := make([]any, 0, 8)
 	if filter.Keyword != "" {
-		where = append(where, "(l.account_ref LIKE ? OR l.endpoint LIKE ? OR l.program LIKE ? OR COALESCE(a.nickname, '') LIKE ? OR COALESCE(a.alias, '') LIKE ?)")
+		where = append(where, "(l.account_ref LIKE ? OR l.endpoint LIKE ? OR l.app_id LIKE ? OR COALESCE(a.nickname, '') LIKE ? OR COALESCE(a.alias, '') LIKE ?)")
 		kw := "%" + filter.Keyword + "%"
 		args = append(args, kw, kw, kw, kw, kw)
 	}
@@ -774,7 +792,7 @@ func (db *DB) ListAPICallLogs(ctx context.Context, filter APICallLogFilter) ([]A
 	}
 	args = append(args, limit, filter.Offset)
 	rows, err := db.sql.QueryContext(ctx, `SELECT l.id, l.account_id, l.account_ref,
-		COALESCE(a.nickname, a.alias, ''), l.endpoint, l.method, l.client_ip, l.program,
+		COALESCE(a.nickname, a.alias, ''), l.endpoint, l.method, l.app_id, l.client_ip,
 		l.status_code, l.success, l.duration_ms, l.error_message, l.created_at
 		FROM api_call_logs l LEFT JOIN wechat_accounts a ON a.id=l.account_id
 		WHERE `+whereSQL+` ORDER BY l.created_at DESC, l.id DESC LIMIT ? OFFSET ?`, args...)
@@ -787,7 +805,7 @@ func (db *DB) ListAPICallLogs(ctx context.Context, filter APICallLogFilter) ([]A
 		var item APICallLog
 		var accountID sql.NullInt64
 		var success int
-		if err := rows.Scan(&item.ID, &accountID, &item.AccountRef, &item.AccountName, &item.Endpoint, &item.Method, &item.ClientIP, &item.Program, &item.StatusCode, &success, &item.DurationMS, &item.ErrorMessage, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &accountID, &item.AccountRef, &item.AccountName, &item.Endpoint, &item.Method, &item.AppID, &item.ClientIP, &item.StatusCode, &success, &item.DurationMS, &item.ErrorMessage, &item.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		if accountID.Valid {

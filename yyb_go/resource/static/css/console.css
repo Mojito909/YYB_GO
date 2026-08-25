@@ -331,7 +331,7 @@
   font-size: 12.5px;
 }
 
-.log-toolbar { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(150px, 1fr) 130px 130px; gap: 12px; align-items: end; margin-bottom: 16px; }
+.log-toolbar { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(150px, 1fr) repeat(3, 120px); gap: 12px; align-items: end; margin-bottom: 16px; }
 .log-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
 .log-table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 12px; }
 .log-table th { padding: 10px 12px; text-align: left; background: var(--surface); color: var(--muted); font-size: 11px; font-weight: 650; white-space: nowrap; }

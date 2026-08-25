@@ -13,7 +13,7 @@ const state = {
   searchKeyword: "",
   statusFilter: "all",
   drawerOpenID: "",
-  logs: { items: [], total: 0, offset: 0, limit: 50, retentionDays: 7 },
+  logs: { items: [], total: 0, offset: 0, limit: 20, retentionDays: 7 },
   logRefreshTimer: null
 };
 
@@ -272,7 +272,7 @@ const VIEWS = {
   overview: { title: "总览", subtitle: "账号状态与常用维护动作" },
   accounts: { title: "账号管理", subtitle: "搜索、查看详情与删除账号" },
   call: { title: "能力调用", subtitle: "选择账号并调用 wxapp 接口" },
-  "api-logs": { title: "接口日志", subtitle: "实时查看调用 IP、程序、状态与耗时" },
+  "api-logs": { title: "接口日志", subtitle: "实时查看调用 IP、小程序 ID、状态与耗时" },
   system: { title: "系统", subtitle: "文档入口与最近活动" }
 };
 
@@ -339,7 +339,7 @@ function renderAPILogs() {
     <td><code>${escapeHTML(item.method)} ${escapeHTML(item.endpoint)}</code></td>
     <td>${escapeHTML(item.account_name || item.account_ref || "—")}</td>
     <td class="tnum">${escapeHTML(item.client_ip || "—")}</td>
-    <td class="log-program" title="${escapeHTML(item.program)}">${escapeHTML(item.program || "—")}</td>
+    <td class="log-program" title="${escapeHTML(item.app_id || "未知")}">${escapeHTML(item.app_id || "未知")}</td>
     <td><span class="log-status ${item.success ? "ok" : "bad"}">${item.status_code} ${item.success ? "成功" : "失败"}</span></td>
     <td class="tnum">${item.duration_ms} ms</td>
     <td><button class="btn ghost sm" type="button" data-delete-log="${item.id}">删除</button></td>
@@ -364,6 +364,7 @@ async function loadAPILogs(silent = false) {
 function setupAPILogs() {
   ["logSearch", "logIPFilter", "logStatusFilter"].forEach(id => $(id).addEventListener("input", () => { state.logs.offset = 0; loadAPILogs(); }));
   $("reloadLogsBtn").addEventListener("click", () => loadAPILogs());
+  $("logPageSize").addEventListener("change", event => { state.logs.limit = Number(event.target.value); state.logs.offset = 0; loadAPILogs(); });
   $("logPrevBtn").addEventListener("click", () => { state.logs.offset = Math.max(0, state.logs.offset - state.logs.limit); loadAPILogs(); });
   $("logNextBtn").addEventListener("click", () => { state.logs.offset += state.logs.limit; loadAPILogs(); });
   $("logRetentionSelect").addEventListener("change", async event => {
