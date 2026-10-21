@@ -208,6 +208,96 @@ function showAPITokenModal(account) {
   loadStatus();
 }
 
+/**
+ * 显示账号的 Bark 通知配置弹窗。
+ * @param {object} account 账号对象（需含 openid）
+ */
+function showBarkModal(account) {
+  const name = accountName(account);
+  const ref = account.openid;
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="barkTitle" style="width:min(500px,100%)">
+      <h3 id="barkTitle">Bark 通知 · ${escapeHTML(name)}</h3>
+      <p class="modal-msg">账号登录失效时通过 Bark 推送提醒。device key 可在 Bark App 中复制，留空保存表示关闭通知。</p>
+      <dl class="kv-grid" id="barkStatus"><dt>状态</dt><dd>加载中…</dd></dl>
+      <div class="field">
+        <label for="barkKeyInput">Bark device key</label>
+        <input class="input" id="barkKeyInput" autocomplete="off" spellcheck="false" placeholder="粘贴 Bark App 中的 device key">
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-act="cancel">关闭</button>
+        <button class="btn secondary" type="button" data-act="test">发送测试</button>
+        <button class="btn primary" type="button" data-act="save">保存</button>
+      </div>
+    </div>
+  `;
+  const close = () => overlay.remove();
+  const statusEl = overlay.querySelector("#barkStatus");
+  const input = overlay.querySelector("#barkKeyInput");
+  const testBtn = overlay.querySelector('[data-act="test"]');
+  const saveBtn = overlay.querySelector('[data-act="save"]');
+
+  const renderStatus = info => {
+    statusEl.innerHTML = "";
+    const rows = [
+      ["状态", info && info.enabled ? "已开启" : "未开启"],
+      ["Bark key", info && info.key_hint ? info.key_hint : "—"]
+    ];
+    for (const [k, v] of rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = k;
+      const dd = document.createElement("dd");
+      dd.textContent = v;
+      statusEl.append(dt, dd);
+    }
+  };
+
+  const loadStatus = async () => {
+    try {
+      renderStatus(await api("GET", `/accounts/bark?ref=${encodeURIComponent(ref)}`));
+    } catch (error) {
+      statusEl.innerHTML = "";
+      const dt = document.createElement("dt");
+      dt.textContent = "状态";
+      const dd = document.createElement("dd");
+      dd.textContent = "查询失败：" + error.message;
+      statusEl.append(dt, dd);
+    }
+  };
+
+  overlay.querySelector('[data-act="cancel"]').addEventListener("click", close);
+
+  saveBtn.addEventListener("click", async () => {
+    saveBtn.disabled = true;
+    try {
+      await api("POST", "/accounts/bark", { ref, key: input.value.trim() });
+      input.value = "";
+      Toast.success("Bark 通知配置已保存");
+      await loadStatus();
+    } catch (error) {
+      Toast.error("保存失败：" + error.message);
+    }
+    saveBtn.disabled = false;
+  });
+
+  testBtn.addEventListener("click", async () => {
+    testBtn.disabled = true;
+    try {
+      await api("POST", "/accounts/bark/test", { ref, key: input.value.trim() });
+      Toast.success("测试通知已发送");
+    } catch (error) {
+      Toast.error("测试失败：" + error.message);
+    }
+    testBtn.disabled = false;
+  });
+
+  document.body.appendChild(overlay);
+  input.focus();
+  loadStatus();
+}
+
 function showChangePasswordModal() {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
@@ -219,7 +309,7 @@ function showChangePasswordModal() {
         <input class="input" id="pwdOld" type="password" autocomplete="current-password">
       </div>
       <div class="field">
-        <label for="pwdNew">新密码（至少 6 位）</label>
+        <label for="pwdNew">新密码（至少 8 位）</label>
         <input class="input" id="pwdNew" type="password" autocomplete="new-password">
       </div>
       <div class="field">
@@ -240,7 +330,7 @@ function showChangePasswordModal() {
     const newPwd2 = overlay.querySelector("#pwdNew2").value;
     if (!oldPwd || !newPwd) { Toast.warning("请填写完整"); return; }
     if (newPwd !== newPwd2) { Toast.warning("两次输入的新密码不一致"); return; }
-    if (newPwd.length < 6) { Toast.warning("新密码至少 6 位"); return; }
+    if (newPwd.length < 8) { Toast.warning("新密码至少 8 位"); return; }
     try {
       await api("POST", "/auth/password", { old_password: oldPwd, new_password: newPwd });
       close();
@@ -645,6 +735,7 @@ function renderAccounts() {
           <span class="account-card-actions">
             <button class="btn sm secondary" type="button" data-op="detail">详情</button>
             <button class="btn sm secondary" type="button" data-op="token">令牌</button>
+            <button class="btn sm secondary" type="button" data-op="bark" aria-label="Bark 通知" title="Bark 通知">Bark</button>
             <button class="btn sm danger" type="button" data-op="delete">删除</button>
           </span>
         </span>
@@ -663,6 +754,7 @@ function renderAccounts() {
       const op = e.target.closest("[data-op]")?.dataset.op;
       if (op === "detail") { openDrawer(account.openid); return; }
       if (op === "token") { showAPITokenModal(account); return; }
+      if (op === "bark") { showBarkModal(account); return; }
       if (op === "delete") { confirmDelete(account); return; }
       selectCard();
     });

@@ -91,5 +91,3 @@ async function doLogin(e){
  return false;
 }
 </script></main></body></html>`
-
-var openAPISpec = newOpenAPISpec()

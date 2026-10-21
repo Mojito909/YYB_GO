@@ -29,6 +29,87 @@
 - 增加健康检查、优雅停止和持久化目录说明。
 - 增加常见代理和容器网络配置示例。
 
+## [0.2.4] - 2026-10-21
+
+### Added
+
+#### Bark 通知
+
+- 账号卡片增加「Bark」入口，可按账号保存 device key、发送测试通知，留空保存表示关闭通知。
+- 账号登录失效时自动推送 Bark 通知；同一轮失效只推送一次，账号恢复可用后重置，下一次失效可再次通知。
+- 支持 `-bark-server` / `YYB_BARK_SERVER` 指定自建 Bark 服务，默认使用 `https://api.day.app`。
+- 新增 `GET/POST /accounts/bark` 与 `POST /accounts/bark/test` 接口，并补充 OpenAPI 说明。
+
+### Security
+
+#### 登录鉴权
+
+- 登录接口增加按来源 IP 的失败限流：5 分钟内失败 5 次后封禁 5 分钟，返回 429 并携带 `Retry-After`。
+- 用户不存在时同样执行一次 bcrypt 校验，降低通过响应耗时枚举用户名的可能。
+- 修改密码的最小长度由 6 位提升到 8 位；修改密码仅接受管理后台 Cookie 会话，账号级 API 令牌调用返回 401。
+
+#### 反向代理与会话
+
+- 新增 `-trust-proxy` / `YYB_TRUST_PROXY` 和 `-secure-cookie` / `YYB_SECURE_COOKIE` 启动配置。
+- 默认不再信任 `X-Forwarded-For` / `X-Real-IP`，来源 IP 以 TCP 对端为准；开启 `trust-proxy` 后按 `X-Forwarded-Proto` 决定是否下发 Secure Cookie。
+
+#### 请求与网络
+
+- 所有请求体限制为 1 MiB，声明长度超限返回 413，chunked 超限由 `MaxBytesReader` 兜底。
+- 头像下载在拨号阶段拒绝回环、私网、链路本地和 CGNAT 地址，并忽略环境代理，降低 SSRF 风险。
+
+#### 错误输出
+
+- 500 响应不再回显数据库或内部错误细节，统一返回 `internal server error`，详细错误仅写入服务日志。
+
+### Changed
+
+#### 接口日志
+
+- 接口调用日志改为异步批量写入，每 64 条或每分钟落库一次，停机时先清空队列。
+- 日志保留期清理由“每次调用执行一次 DELETE”改为每分钟执行一次。
+- `api_tokens.last_used_at` 最多每分钟更新一次，降低 SQLite 写压力。
+
+#### 数据库与会话
+
+- `wechat_accounts` 增加 `bark_key` 和 `expired_notified` 字段，启动时自动为旧库补充缺失列。
+- SQLite 连接级 PRAGMA 移入 DSN，确保每个新建连接都启用 WAL、外键、busy_timeout 和 synchronous。
+- 总览指标改为 SQL 聚合（总计、分桶、P95 三条查询），不再把统计窗口内的全部日志加载进内存。
+- 删除账号时同时清理本地头像文件。
+- 启动时清理一次已过期的协议会话。
+
+#### 账号标识
+
+- 数字 `ref` 同时匹配到账号 id 和 uin 时返回 400，并支持 `id:` / `uin:` / `openid:` 显式前缀。
+- README 与 OpenAPI 文档同步补充前缀说明。
+
+#### 服务与部署
+
+- `/health` 增加数据库探活，数据库不可用时返回 503。
+- HTTP 服务增加 `ReadTimeout`、`WriteTimeout`、`IdleTimeout`，覆盖二维码创建的最长链路。
+- CI 测试任务增加 `gofmt` 与 `go vet` 门禁。
+
+### Fixed
+
+#### 账号状态与会话
+
+- 网络或上游临时故障不再把账号误标为 `expired`，仅在上游明确拒绝凭证时标记失效。
+- 本地会话缓存损坏时自动清除并重新登录，不再持续返回 502。
+- 修复 `api_tokens.last_used_at` 写入失败会导致鉴权失败的问题。
+
+#### 扫码登录
+
+- 修复并发创建二维码时可能误删其他请求刚写入的图片。
+- 修复扫码页轮询的 `AbortSignal` 未真正传给 `fetch` 的问题，离开页面时现在能取消在飞请求。
+
+### Removed
+
+#### 遗留功能与代码
+
+- 移除 `/features` 残留：`features` 表定义、默认数据、查询方法及相关扫描代码。
+- 移除未使用的 `requestLogger`、`sortedKeys`、`ScanTimeout` 与 `LoginBufferCredentials.Expired`。
+- `openAPISpec` 移回 OpenAPI 实现文件，避免文档变量散落在 fallback 页面文件中。
+
 ## [0.2.3] - 2026-08-26
 
 ### Added

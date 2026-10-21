@@ -1,5 +1,8 @@
 package httpapi
 
+// openAPISpec 在进程启动时构建一次，/openapi.json 直接复用。
+var openAPISpec = newOpenAPISpec()
+
 func newOpenAPISpec() map[string]any {
 	return map[string]any{
 		"openapi": "3.0.3",
@@ -179,7 +182,7 @@ func newOpenAPISpec() map[string]any {
 				"delete": openAPIOperation(
 					[]string{"accounts"},
 					"删除账号",
-					[]map[string]any{queryStringParam("ref", "账号 ID、UIN 或 openid。", true)},
+					[]map[string]any{queryStringParam("ref", "账号 ID、UIN 或 openid；纯数字歧义时可用 id: / uin: / openid: 前缀。", true)},
 					nil,
 					defaulted(map[string]any{
 						"200": jsonResponse("删除结果。", refSchema("DeleteAccountResponse")),
@@ -212,11 +215,44 @@ func newOpenAPISpec() map[string]any {
 				"get": openAPIOperation(
 					[]string{"accounts"},
 					"获取账号头像",
-					[]map[string]any{queryStringParam("ref", "账号 ID、UIN 或 openid。", true)},
+					[]map[string]any{queryStringParam("ref", "账号 ID、UIN 或 openid；纯数字歧义时可用 id: / uin: / openid: 前缀。", true)},
 					nil,
 					defaulted(map[string]any{
 						"200": imageResponse("头像图片。"),
 						"302": map[string]any{"description": "跳转到远程头像地址。"},
+					}),
+				),
+			},
+			"/accounts/bark": map[string]any{
+				"get": openAPIOperation(
+					[]string{"accounts"},
+					"查询账号的 Bark 通知配置",
+					[]map[string]any{queryStringParam("ref", "账号 ID、UIN 或 openid。", true)},
+					nil,
+					defaulted(map[string]any{
+						"200": jsonResponse("Bark 通知状态。", refSchema("BarkStatus")),
+					}),
+				),
+				"post": openAPIOperation(
+					[]string{"accounts"},
+					"保存或关闭账号的 Bark 通知配置",
+					nil,
+					jsonRequestBody(refSchema("BarkConfigRequest")),
+					defaulted(map[string]any{
+						"200": jsonResponse("Bark 通知配置已保存。", refSchema("BarkStatus")),
+					}),
+				),
+			},
+			"/accounts/bark/test": map[string]any{
+				"post": openAPIOperation(
+					[]string{"accounts"},
+					"发送一条 Bark 测试通知",
+					nil,
+					jsonRequestBody(refSchema("BarkConfigRequest")),
+					defaulted(map[string]any{
+						"200": jsonResponse("测试通知已发送。", objectSchema(nil, map[string]any{
+							"sent": map[string]any{"type": "boolean"},
+						})),
 					}),
 				),
 			},
@@ -278,7 +314,7 @@ func newOpenAPISpec() map[string]any {
 				}),
 				"ChangePasswordRequest": objectSchema([]string{"old_password", "new_password"}, map[string]any{
 					"old_password": map[string]any{"type": "string", "description": "当前密码。"},
-					"new_password": map[string]any{"type": "string", "description": "新密码，至少 6 位。"},
+					"new_password": map[string]any{"type": "string", "description": "新密码，至少 8 位。"},
 				}),
 				"QRCreateResponse": objectSchema([]string{"session_id", "status", "image_url"}, map[string]any{
 					"session_id":   map[string]any{"type": "string"},
@@ -302,8 +338,18 @@ func newOpenAPISpec() map[string]any {
 					"avatar":          nullableStringSchema("本地头像路径或远程头像 URL。"),
 					"status":          nullableStringSchema("账号状态。"),
 					"last_checked_at": nullableInt64Schema(),
+					"bark_enabled":    map[string]any{"type": "boolean", "description": "是否已配置 Bark 通知。"},
 					"created_at":      int64Schema(),
 					"updated_at":      int64Schema(),
+				}),
+				"BarkConfigRequest": objectSchema([]string{"ref"}, map[string]any{
+					"ref": map[string]any{"type": "string", "description": "账号 ID、UIN 或 openid。"},
+					"key": map[string]any{"type": "string", "description": "Bark device key；留空表示关闭通知。测试接口不传时使用已保存的 key。"},
+				}),
+				"BarkStatus": objectSchema([]string{"account_id", "enabled"}, map[string]any{
+					"account_id": int64Schema(),
+					"enabled":    map[string]any{"type": "boolean"},
+					"key_hint":   map[string]any{"type": "string", "description": "脱敏后的 device key。"},
 				}),
 				"RefreshResult": objectSchema([]string{"id", "openid", "status"}, map[string]any{
 					"id":       int64Schema(),
@@ -317,7 +363,7 @@ func newOpenAPISpec() map[string]any {
 					"openid":  map[string]any{"type": "string"},
 				}),
 				"AccountRefRequest": objectSchema(nil, map[string]any{
-					"ref": map[string]any{"type": "string", "description": "账号 ID、UIN 或 openid。支持批量操作的接口不传时表示全部账号。"},
+					"ref": map[string]any{"type": "string", "description": "账号 ID、UIN 或 openid；纯数字歧义时可用 id: / uin: / openid: 前缀。支持批量操作的接口不传时表示全部账号。"},
 				}),
 				"RefreshResponse": oneOfSchema(
 					refSchema("RefreshResult"),
@@ -328,11 +374,11 @@ func newOpenAPISpec() map[string]any {
 					arraySchema(refSchema("AccountPublic")),
 				),
 				"WxappRequest": objectSchema([]string{"ref", "app_id"}, map[string]any{
-					"ref":    map[string]any{"type": "string", "description": "账号 ID、UIN 或 openid。"},
+					"ref":    map[string]any{"type": "string", "description": "账号 ID、UIN 或 openid；纯数字歧义时可用 id: / uin: / openid: 前缀。"},
 					"app_id": map[string]any{"type": "string"},
 				}),
 				"OperateWXDataRequest": objectSchema([]string{"ref", "app_id", "payload"}, map[string]any{
-					"ref":     map[string]any{"type": "string", "description": "账号 ID、UIN 或 openid。"},
+					"ref":     map[string]any{"type": "string", "description": "账号 ID、UIN 或 openid；纯数字歧义时可用 id: / uin: / openid: 前缀。"},
 					"app_id":  map[string]any{"type": "string"},
 					"payload": freeFormObjectSchema("完整的 operateWxData 请求 JSON。"),
 				}),

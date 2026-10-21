@@ -5,16 +5,105 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"yyb_go/internal/store"
 )
+
+const (
+	apiLogBatchSize    = 64
+	apiLogChannelSize  = 512
+	apiLogFlushPeriod  = time.Minute
+	apiLogWriteTimeout = 5 * time.Second
+)
+
+// apiLogWriter 把接口日志异步批量写入 SQLite，避免请求路径上同步写库，
+// 同时把保留期清理从“每次调用”降为定时执行。
+type apiLogWriter struct {
+	db        *store.DB
+	ch        chan store.APICallLog
+	done      chan struct{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
+}
+
+func newAPILogWriter(db *store.DB) *apiLogWriter {
+	w := &apiLogWriter{
+		db:   db,
+		ch:   make(chan store.APICallLog, apiLogChannelSize),
+		done: make(chan struct{}),
+	}
+	w.wg.Add(1)
+	go w.loop()
+	return w
+}
+
+func (w *apiLogWriter) enqueue(entry store.APICallLog) {
+	select {
+	case w.ch <- entry:
+	default:
+		// 队列已满时丢弃日志，避免反压阻塞业务请求。
+	}
+}
+
+func (w *apiLogWriter) loop() {
+	defer w.wg.Done()
+	ticker := time.NewTicker(apiLogFlushPeriod)
+	defer ticker.Stop()
+
+	batch := make([]store.APICallLog, 0, apiLogBatchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), apiLogWriteTimeout)
+		if err := w.db.InsertAPICallLogs(ctx, batch); err != nil {
+			log.Printf("[api-log] 写入失败: %v", err)
+		}
+		cancel()
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case entry := <-w.ch:
+			batch = append(batch, entry)
+			if len(batch) >= apiLogBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+			ctx, cancel := context.WithTimeout(context.Background(), apiLogWriteTimeout)
+			if _, err := w.db.PruneAPICallLogs(ctx); err != nil {
+				log.Printf("[api-log] 清理过期日志失败: %v", err)
+			}
+			cancel()
+		case <-w.done:
+			for {
+				select {
+				case entry := <-w.ch:
+					batch = append(batch, entry)
+				default:
+					flush()
+					return
+				}
+			}
+		}
+	}
+}
+
+func (w *apiLogWriter) Close() {
+	w.closeOnce.Do(func() { close(w.done) })
+	w.wg.Wait()
+}
 
 // apiAuditMiddleware records calls made through the public wxapp API. It runs
 // after authentication, so account-scoped bearer tokens are attributed to the
@@ -47,10 +136,13 @@ func (a *App) apiAuditMiddleware() gin.HandlerFunc {
 		if len(appID) > 240 {
 			appID = appID[:240]
 		}
-		log := store.APICallLog{
+		if len(accountRef) > 240 {
+			accountRef = accountRef[:240]
+		}
+		entry := store.APICallLog{
 			Endpoint:   request.URL.Path,
 			Method:     request.Method,
-			ClientIP:   requestClientIP(request),
+			ClientIP:   requestClientIP(request, a.cfg.TrustProxy),
 			AppID:      appID,
 			StatusCode: status,
 			Success:    status < 400,
@@ -58,14 +150,14 @@ func (a *App) apiAuditMiddleware() gin.HandlerFunc {
 			CreatedAt:  time.Now().Unix(),
 		}
 		if accountRef != "" {
-			log.AccountRef = accountRef
+			entry.AccountRef = accountRef
 		}
 		if accountID != 0 {
-			log.AccountID = &accountID
+			entry.AccountID = &accountID
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = a.db.RecordAPICall(ctx, log)
-		cancel()
+		if a.apiLogs != nil {
+			a.apiLogs.enqueue(entry)
+		}
 	}
 }
 
@@ -107,13 +199,17 @@ func (w *auditResponseWriter) Write(data []byte) (int, error) {
 	return w.ResponseWriter.Write(data)
 }
 
-func requestClientIP(r *http.Request) string {
-	for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
-		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
-			if comma := strings.IndexByte(value, ','); comma >= 0 {
-				value = value[:comma]
+// requestClientIP 返回请求来源 IP。只有显式开启 trustProxy 时才信任
+// X-Forwarded-For / X-Real-IP，否则一律以 TCP 对端地址为准，避免伪造。
+func requestClientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
+			if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
+				if comma := strings.IndexByte(value, ','); comma >= 0 {
+					value = value[:comma]
+				}
+				return strings.TrimSpace(value)
 			}
-			return strings.TrimSpace(value)
 		}
 	}
 	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
@@ -138,12 +234,12 @@ func (a *App) handleAPILogs(w http.ResponseWriter, r *http.Request) {
 		}
 		items, total, err := a.db.ListAPICallLogs(r.Context(), filter)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		settings, err := a.db.GetAPILogSettings(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -153,7 +249,7 @@ func (a *App) handleAPILogs(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		count, err := a.db.ClearAPICallLogs(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": count})
@@ -182,7 +278,7 @@ func (a *App) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	metrics, err := a.db.GetAPIMetrics(r.Context(), period, time.Now())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	var mem runtime.MemStats
@@ -190,11 +286,11 @@ func (a *App) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"metrics": metrics,
 		"runtime": map[string]any{
-			"goroutines": runtime.NumGoroutine(),
+			"goroutines":       runtime.NumGoroutine(),
 			"heap_alloc_bytes": mem.HeapAlloc,
-			"heap_alloc_mb": float64(mem.HeapAlloc) / 1024 / 1024,
-			"num_gc": mem.NumGC,
-			"uptime_seconds": int64(time.Since(a.startedAt).Seconds()),
+			"heap_alloc_mb":    float64(mem.HeapAlloc) / 1024 / 1024,
+			"num_gc":           mem.NumGC,
+			"uptime_seconds":   int64(time.Since(a.startedAt).Seconds()),
 		},
 	})
 }
@@ -211,7 +307,7 @@ func (a *App) handleAPILogByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.db.DeleteAPICallLog(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
@@ -222,7 +318,7 @@ func (a *App) handleAPILogSettings(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		settings, err := a.db.GetAPILogSettings(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, settings)

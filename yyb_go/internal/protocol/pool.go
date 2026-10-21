@@ -49,7 +49,7 @@ type Pool struct {
 	db  *store.DB
 
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[string]*accountLock
 
 	loginSem     chan struct{}
 	shortlinkSem chan struct{}
@@ -78,7 +78,7 @@ func NewPool(cfg Config, db *store.DB) *Pool {
 	return &Pool{
 		cfg:          cfg,
 		db:           db,
-		locks:        map[string]*sync.Mutex{},
+		locks:        map[string]*accountLock{},
 		loginSem:     make(chan struct{}, cfg.MaxLoginConcurrency),
 		shortlinkSem: make(chan struct{}, cfg.MaxShortlinkConcurrency),
 	}
@@ -161,18 +161,19 @@ func (p *Pool) run(ctx context.Context, loginBuffer string, accountID int64, tcp
 }
 
 func (p *Pool) state(ctx context.Context, loginBuffer string, accountID int64, tcpProxy string) (WmpfSession, error) {
-	if row, err := p.db.GetSession(ctx, accountID, tcpProxy); err == nil {
-		return sessionFromBlob(row.SessionBlob)
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	if st, ok, err := p.cachedSession(ctx, accountID, tcpProxy); err != nil {
 		return WmpfSession{}, err
+	} else if ok {
+		return st, nil
 	}
-	lock := p.lockFor(fmt.Sprintf("%d\x00%s", accountID, tcpProxy))
-	lock.Lock()
-	defer lock.Unlock()
-	if row, err := p.db.GetSession(ctx, accountID, tcpProxy); err == nil {
-		return sessionFromBlob(row.SessionBlob)
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	key := fmt.Sprintf("%d\x00%s", accountID, tcpProxy)
+	lock := p.lockFor(key)
+	lock.mu.Lock()
+	defer p.unlockFor(key, lock)
+	if st, ok, err := p.cachedSession(ctx, accountID, tcpProxy); err != nil {
 		return WmpfSession{}, err
+	} else if ok {
+		return st, nil
 	}
 	acc, err := p.db.GetAccount(ctx, accountID)
 	if err != nil {
@@ -198,15 +199,49 @@ func (p *Pool) state(ctx context.Context, loginBuffer string, accountID int64, t
 	return st, nil
 }
 
-func (p *Pool) lockFor(key string) *sync.Mutex {
+// cachedSession 读取并解析本地会话缓存；缓存损坏时清除它，让调用方重新登录。
+func (p *Pool) cachedSession(ctx context.Context, accountID int64, tcpProxy string) (WmpfSession, bool, error) {
+	row, err := p.db.GetSession(ctx, accountID, tcpProxy)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return WmpfSession{}, false, nil
+		}
+		return WmpfSession{}, false, err
+	}
+	st, err := sessionFromBlob(row.SessionBlob)
+	if err != nil {
+		// 损坏的缓存直接清掉，避免该账号后续请求持续失败。
+		_ = p.db.InvalidateSession(ctx, accountID, tcpProxy)
+		return WmpfSession{}, false, nil
+	}
+	return st, true, nil
+}
+
+type accountLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (p *Pool) lockFor(key string) *accountLock {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if l := p.locks[key]; l != nil {
-		return l
+	l := p.locks[key]
+	if l == nil {
+		l = &accountLock{}
+		p.locks[key] = l
 	}
-	l := &sync.Mutex{}
-	p.locks[key] = l
+	l.refs++
 	return l
+}
+
+func (p *Pool) unlockFor(key string, l *accountLock) {
+	l.mu.Unlock()
+	p.mu.Lock()
+	l.refs--
+	if l.refs == 0 {
+		delete(p.locks, key)
+	}
+	p.mu.Unlock()
 }
 
 func (p *Pool) loginAndSession(ctx context.Context, loginBuffer, tcpProxy string) (WmpfSession, error) {

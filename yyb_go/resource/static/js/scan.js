@@ -77,7 +77,7 @@
     inflight.add(controller);
     let st;
     try {
-      st = await api("GET", `/qr/${sid}/poll`, undefined, controller.signal);
+      st = await api("GET", `/qr/${sid}/poll`, undefined, { signal: controller.signal });
     } catch {
       return; // 包含离开页面时的主动取消，静默丢弃
     } finally {

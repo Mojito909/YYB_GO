@@ -8,15 +8,16 @@
  * @param {string} method HTTP 方法
  * @param {string} url 请求地址
  * @param {object} [body] 请求体（自动 JSON 序列化）
+ * @param {object} [options] 额外 fetch 选项，例如 { signal }
  * @returns {Promise<any>} data 载荷
  */
-async function api(method, url, body) {
-  const options = { method, headers: {} };
+async function api(method, url, body, options = {}) {
+  const init = { method, headers: {}, ...options };
   if (body !== undefined) {
-    options.headers["Content-Type"] = "application/json";
-    options.body = JSON.stringify(body);
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
   }
-  const response = await fetch(url, options);
+  const response = await fetch(url, init);
   if (response.status === 401) {
     // 已在登录页时不再跳转，避免中止进行中的请求（ERR_ABORTED）
     if (location.pathname !== "/login") location.href = "/login";

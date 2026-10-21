@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -76,6 +77,10 @@ VALUES(7, 1, 12345, '', '{"ready":true}', ?, 20, 20);
 		t.Fatalf("new sessions table does not exist")
 	}
 
+	if _, err := db.GetAccount(ctx, 1); err != nil {
+		t.Fatalf("GetAccount() after bark column migration error = %v", err)
+	}
+
 	session, err := db.GetSession(ctx, 1, "")
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
@@ -85,6 +90,69 @@ VALUES(7, 1, 12345, '', '{"ready":true}', ?, 20, 20);
 	}
 	if ready, ok := session.SessionBlob["ready"].(bool); !ok || !ready {
 		t.Fatalf("session blob = %#v", session.SessionBlob)
+	}
+}
+
+func TestOpenAppliesConnectionPragmas(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "pragmas.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	var foreignKeys int
+	if err := db.sql.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		t.Fatalf("query foreign_keys: %v", err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("foreign_keys = %d, want 1", foreignKeys)
+	}
+	var journalMode string
+	if err := db.sql.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatalf("query journal_mode: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", journalMode)
+	}
+}
+
+func TestResolveAccountAmbiguousNumericRef(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	accA, err := db.UpsertAccount(ctx, "openid-a", "buffer-a", nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("create account A: %v", err)
+	}
+	accB, err := db.UpsertAccount(ctx, "openid-b", "buffer-b", nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("create account B: %v", err)
+	}
+	// B 的 UIN 与 A 的 ID 相同，制造数字 ref 歧义。
+	if err := db.SetAccountUIN(ctx, accA.ID, 100); err != nil {
+		t.Fatalf("set UIN A: %v", err)
+	}
+	if err := db.SetAccountUIN(ctx, accB.ID, accA.ID); err != nil {
+		t.Fatalf("set UIN B: %v", err)
+	}
+
+	if _, err := db.ResolveAccount(ctx, "1"); !errors.Is(err, ErrAmbiguousRef) {
+		t.Fatalf("ResolveAccount(1) error = %v, want ErrAmbiguousRef", err)
+	}
+	byID, err := db.ResolveAccount(ctx, "id:1")
+	if err != nil || byID.ID != accA.ID {
+		t.Fatalf("ResolveAccount(id:1) = %#v, %v", byID, err)
+	}
+	byUIN, err := db.ResolveAccount(ctx, "uin:1")
+	if err != nil || byUIN.ID != accB.ID {
+		t.Fatalf("ResolveAccount(uin:1) = %#v, %v", byUIN, err)
+	}
+	byOpenID, err := db.ResolveAccount(ctx, "openid:openid-a")
+	if err != nil || byOpenID.ID != accA.ID {
+		t.Fatalf("ResolveAccount(openid:openid-a) = %#v, %v", byOpenID, err)
 	}
 }
 

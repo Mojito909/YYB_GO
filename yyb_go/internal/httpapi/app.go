@@ -1,16 +1,18 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 
+	"yyb_go/internal/notify"
 	"yyb_go/internal/protocol"
 	"yyb_go/internal/qr"
 	"yyb_go/internal/store"
@@ -28,15 +31,20 @@ type Config struct {
 	DataRoot       string
 	DBFilename     string
 	TCPProxy       string
+	BarkServer     string
+	TrustProxy     bool
+	SecureCookie   bool
 	SessionTTL     time.Duration
 	RequestTimeout time.Duration
 	AvatarTimeout  time.Duration
-	ScanTimeout    time.Duration
 	QRSessionTTL   time.Duration
 	AuthTTL        time.Duration
 }
 
-const accessLogEnv = "YYB_ACCESS_LOG"
+const (
+	accessLogEnv        = "YYB_ACCESS_LOG"
+	maxRequestBodyBytes = 1 << 20
+)
 
 type App struct {
 	cfg       Config
@@ -45,6 +53,8 @@ type App struct {
 	pool      *protocol.Pool
 	qr        *qr.Client
 	auth      *authManager
+	apiLogs   *apiLogWriter
+	notifier  *notify.Bark
 	startedAt time.Time
 
 	mu         sync.Mutex
@@ -92,8 +102,13 @@ func NewApp(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	auth := newAuthManager(db, cfg.AuthTTL)
+	auth := newAuthManager(db, cfg.AuthTTL, cfg.TrustProxy, cfg.SecureCookie)
 	if err := auth.bootstrap(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	notifier, err := notify.NewBark(cfg.BarkServer, barkSendTimeout)
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -110,6 +125,8 @@ func NewApp(cfg Config) (*App, error) {
 		qr:         qr.NewClient(cfg.RequestTimeout),
 		startedAt:  time.Now(),
 		auth:       auth,
+		apiLogs:    newAPILogWriter(db),
+		notifier:   notifier,
 		qrSessions: map[string]*qr.Session{},
 	}, nil
 }
@@ -125,6 +142,9 @@ func (a *App) Close() error {
 	for _, sess := range sessions {
 		sess.StopWatch()
 	}
+	if a.apiLogs != nil {
+		a.apiLogs.Close()
+	}
 	if a.db != nil {
 		return a.db.Close()
 	}
@@ -137,10 +157,17 @@ func (a *App) Handler() http.Handler {
 	}
 
 	router := gin.New()
+	// 未显式开启 trust-proxy 时，gin 不应信任任何转发头。
+	if a.cfg.TrustProxy {
+		_ = router.SetTrustedProxies([]string{"0.0.0.0/0", "::/0"})
+	} else {
+		_ = router.SetTrustedProxies(nil)
+	}
 	if middleware := accessLogger(strings.ToLower(strings.TrimSpace(os.Getenv(accessLogEnv)))); middleware != nil {
 		router.Use(middleware)
 	}
 	router.Use(gin.Recovery())
+	router.Use(bodyLimitMiddleware(maxRequestBodyBytes))
 
 	// 公开路由：登录页、鉴权接口、健康检查、静态资源
 	router.Any("/login", gin.WrapF(a.handleLoginPage))
@@ -150,6 +177,16 @@ func (a *App) Handler() http.Handler {
 	router.Any("/auth/password", gin.WrapF(a.auth.handleChangePassword))
 	router.Any("/auth/token", gin.WrapF(a.auth.handleToken))
 	router.Any("/health", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		if err := a.db.Ping(ctx); err != nil {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, apiEnvelope{
+				Code: http.StatusServiceUnavailable,
+				Msg:  "database unavailable",
+				Data: nil,
+			})
+			return
+		}
 		writeJSON(c.Writer, http.StatusOK, gin.H{"ok": true})
 	})
 	// 静态资源禁用强缓存，避免前端改动后浏览器仍使用旧脚本
@@ -171,6 +208,8 @@ func (a *App) Handler() http.Handler {
 	protected.Any("/qr/*path", gin.WrapF(a.handleQR))
 	protected.Any("/accounts", gin.WrapF(a.handleAccountsRoot))
 	protected.Any("/accounts/avatar", gin.WrapF(a.handleAccountAvatar))
+	protected.Any("/accounts/bark", gin.WrapF(a.handleAccountBark))
+	protected.Any("/accounts/bark/test", gin.WrapF(a.handleAccountBarkTest))
 	protected.Any("/accounts/refresh", gin.WrapF(a.handleAccountRefresh))
 	protected.Any("/accounts/resync", gin.WrapF(a.handleAccountResync))
 	protected.Any("/wxapp/getCode", gin.WrapF(a.handleGetCode))
@@ -185,6 +224,25 @@ func (a *App) Handler() http.Handler {
 	})
 
 	return router
+}
+
+// bodyLimitMiddleware 限制请求体大小：声明长度超限直接 413，
+// 其余情况用 MaxBytesReader 兜底（例如 chunked 请求）。
+func bodyLimitMiddleware(max int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.ContentLength > max {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, apiEnvelope{
+				Code: http.StatusRequestEntityTooLarge,
+				Msg:  "request body too large",
+				Data: nil,
+			})
+			return
+		}
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, max)
+		}
+		c.Next()
+	}
 }
 
 func accessLogger(mode string) gin.HandlerFunc {
@@ -363,7 +421,7 @@ func (a *App) handleQR(w http.ResponseWriter, r *http.Request) {
 		}
 		acc, err := a.storeFromScan(r.Context(), result.LoginBuffer, result.Credentials, userInfo)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		a.dropQRSession(sessionID)
@@ -388,7 +446,7 @@ func (a *App) handleAccountsRoot(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusOK, []store.AccountPublic{})
 					return
 				}
-				writeError(w, http.StatusInternalServerError, err.Error())
+				writeInternalError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, []store.AccountPublic{acc.Public()})
@@ -396,7 +454,7 @@ func (a *App) handleAccountsRoot(w http.ResponseWriter, r *http.Request) {
 		}
 		accounts, err := a.db.ListAccounts(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		out := make([]store.AccountPublic, 0, len(accounts))
@@ -410,9 +468,10 @@ func (a *App) handleAccountsRoot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := a.db.DeleteAccount(r.Context(), acc.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
+		a.removeAccountAvatar(acc)
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": acc.ID, "openid": acc.OpenID})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -485,7 +544,7 @@ func (a *App) handleAccountResync(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := a.resyncProfile(r.Context(), acc)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, updated.Public())
@@ -597,10 +656,14 @@ func (a *App) resolveAccountRef(w http.ResponseWriter, r *http.Request, ref stri
 	}
 	acc, err := a.db.ResolveAccount(r.Context(), ref)
 	if err != nil {
+		if errors.Is(err, store.ErrAmbiguousRef) {
+			writeError(w, http.StatusBadRequest, "ref 同时匹配多个账号，请使用 id: / uin: / openid: 前缀")
+			return nil, false
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "account not found: "+ref)
 		} else {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 		}
 		return nil, false
 	}
@@ -610,7 +673,7 @@ func (a *App) resolveAccountRef(w http.ResponseWriter, r *http.Request, ref stri
 func (a *App) refreshAll(w http.ResponseWriter, r *http.Request) {
 	accounts, err := a.db.ListAccounts(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	out := make([]map[string]any, 0, len(accounts))
@@ -623,19 +686,32 @@ func (a *App) refreshAll(w http.ResponseWriter, r *http.Request) {
 func (a *App) resyncAll(w http.ResponseWriter, r *http.Request) {
 	accounts, err := a.db.ListAccounts(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	out := make([]store.AccountPublic, 0, len(accounts))
 	for _, acc := range accounts {
 		updated, err := a.resyncProfile(r.Context(), acc)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		out = append(out, updated.Public())
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// removeAccountAvatar 删除账号绑定的本地头像文件，避免删除账号后残留。
+func (a *App) removeAccountAvatar(acc *store.WechatAccount) {
+	if acc.Avatar == nil || *acc.Avatar == "" {
+		return
+	}
+	base := filepath.Clean(a.resources.Avatars) + string(os.PathSeparator)
+	path := filepath.Clean(*acc.Avatar)
+	if !strings.HasPrefix(path, base) {
+		return
+	}
+	_ = os.Remove(path)
 }
 
 func (a *App) serveAvatar(w http.ResponseWriter, r *http.Request, acc *store.WechatAccount) {
@@ -669,8 +745,17 @@ func (a *App) refreshLiveness(ctx context.Context, acc *store.WechatAccount) str
 	creds := protocol.CredentialsFromMap(acc.Credentials)
 	result, err := a.qr.RefreshLoginBuffer(ctx, creds)
 	if err != nil {
-		_ = a.db.SetAccountStatus(ctx, acc.ID, "expired")
-		return "expired"
+		var credErr *protocol.CredentialError
+		if errors.As(err, &credErr) {
+			_ = a.db.SetAccountStatus(ctx, acc.ID, "expired")
+			a.notifyAccountExpired(acc)
+			return "expired"
+		}
+		// 网络抖动或上游临时故障不应把账号标记为失效，保留原状态。
+		if acc.Status != nil && *acc.Status != "" {
+			return *acc.Status
+		}
+		return "unknown"
 	}
 	_ = a.db.SetAccountCredential(ctx, acc.ID, result.LoginBuffer, result.Credentials.ToMap())
 	_ = a.db.SetAccountStatus(ctx, acc.ID, "alive")
@@ -707,7 +792,10 @@ func (a *App) invokeWXApp(ctx context.Context, acc *store.WechatAccount, appID s
 	}
 	status := a.refreshLiveness(ctx, acc)
 	if status != "alive" {
-		return nil, accountExpiredError{openid: acc.OpenID}
+		if status == "expired" {
+			return nil, accountExpiredError{openid: acc.OpenID}
+		}
+		return nil, fmt.Errorf("account refresh failed temporarily, retry later")
 	}
 	fresh, err := a.db.GetAccount(ctx, acc.ID)
 	if err == nil && fresh != nil {
@@ -760,6 +848,58 @@ func (a *App) resolveAvatar(ctx context.Context, openid string, userInfo map[str
 	return u
 }
 
+// avatarHTTPClient 只用于下载头像：不跟随环境代理，并在拨号阶段拒绝内网地址。
+var avatarHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext:           safeDialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+	},
+}
+
+func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	var lastErr error
+	for _, ip := range ips {
+		if isBlockedIP(ip.IP) {
+			continue
+		}
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("avatar host resolves to non-public address: %s", host)
+	}
+	return nil, lastErr
+}
+
+// isBlockedIP 拦截回环、私网、链路本地、组播以及 CGNAT 地址，避免 SSRF。
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	// 100.64.0.0/10（含云厂商元数据地址 100.100.100.200）
+	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+		return true
+	}
+	return false
+}
+
 func downloadAvatar(ctx context.Context, url, dest string, timeout time.Duration) bool {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -767,8 +907,7 @@ func downloadAvatar(ctx context.Context, url, dest string, timeout time.Duration
 	if err != nil {
 		return false
 	}
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
+	resp, err := avatarHTTPClient.Do(req)
 	if err != nil {
 		return false
 	}
@@ -787,7 +926,7 @@ func looksLikeImage(data []byte) bool {
 	}
 	magics := [][]byte{{0xff, 0xd8, 0xff}, {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, []byte("GIF87a"), []byte("GIF89a")}
 	for _, m := range magics {
-		if strings.HasPrefix(string(data), string(m)) {
+		if bytes.HasPrefix(data, m) {
 			return true
 		}
 	}
@@ -834,12 +973,20 @@ func (a *App) pruneQR() {
 }
 
 func (a *App) cleanupQR(keep map[string]bool) {
+	// 只清理超过会话 TTL 且不在保留集合内的图片，
+	// 避免并发创建二维码时删掉另一个请求刚写入的文件。
+	cutoff := time.Now().Add(-a.cfg.QRSessionTTL)
 	files, _ := filepath.Glob(filepath.Join(a.resources.QR, "*.jpg"))
 	for _, f := range files {
 		sid := strings.TrimSuffix(filepath.Base(f), ".jpg")
-		if !keep[sid] {
-			_ = os.Remove(f)
+		if keep[sid] {
+			continue
 		}
+		info, err := os.Stat(f)
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.Remove(f)
 	}
 }
 
@@ -877,10 +1024,10 @@ func writeError(w http.ResponseWriter, status int, detail string) {
 	})
 }
 
-func requestLogger(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-	})
+// writeInternalError 把内部错误写入日志，但只向客户端返回通用提示。
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Printf("[http] internal error: %v", err)
+	writeError(w, http.StatusInternalServerError, "internal server error")
 }
 
 func serveFileOrText(w http.ResponseWriter, r *http.Request, path, fallback string) {
@@ -921,13 +1068,4 @@ func safeName(s string) string {
 		}
 	}
 	return b.String()
-}
-
-func sortedKeys[M ~map[string]V, V any](m M) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

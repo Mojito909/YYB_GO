@@ -9,11 +9,18 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"yyb_go/internal/httpapi"
 )
+
+func envBool(key string) bool {
+	value, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(key)))
+	return err == nil && value
+}
 
 func main() {
 	host := flag.String("host", "127.0.0.1", "listen host")
@@ -22,6 +29,9 @@ func main() {
 	dataRoot := flag.String("data-root", "", "runtime data directory (db/avatars/qr), defaults to -resource-root")
 	dbFilename := flag.String("db", httpapi.DefaultDBFilename, "SQLite database filename under data-root/db")
 	tcpProxy := flag.String("tcp-proxy", "", "optional TCP proxy: socks5://host:port or http-connect://host:port")
+	barkServer := flag.String("bark-server", strings.TrimSpace(os.Getenv("YYB_BARK_SERVER")), "Bark push server, defaults to https://api.day.app")
+	trustProxy := flag.Bool("trust-proxy", envBool("YYB_TRUST_PROXY"), "trust X-Forwarded-For / X-Real-IP from a reverse proxy")
+	secureCookie := flag.Bool("secure-cookie", envBool("YYB_SECURE_COOKIE"), "always mark the admin session cookie as Secure")
 	flag.Parse()
 
 	cfg := httpapi.Config{
@@ -29,10 +39,12 @@ func main() {
 		DataRoot:       *dataRoot,
 		DBFilename:     *dbFilename,
 		TCPProxy:       *tcpProxy,
+		BarkServer:     *barkServer,
+		TrustProxy:     *trustProxy,
+		SecureCookie:   *secureCookie,
 		SessionTTL:     30 * time.Minute,
 		RequestTimeout: 8 * time.Second,
 		AvatarTimeout:  10 * time.Second,
-		ScanTimeout:    180 * time.Second,
 		QRSessionTTL:   5 * time.Minute,
 		AuthTTL:        24 * time.Hour,
 	}
@@ -44,10 +56,14 @@ func main() {
 	defer app.Close()
 
 	addr := fmt.Sprintf("%s:%d", *host, *port)
+	// WriteTimeout 需覆盖二维码创建的最长链路（约 43s）。
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           app.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      90 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {

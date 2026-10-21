@@ -57,15 +57,19 @@ func (c LoginBufferCredentials) ToMap() map[string]any {
 	}
 }
 
-func (c LoginBufferCredentials) Expired(skew time.Duration) bool {
-	return time.Now().Add(skew).Unix() >= c.ExpiresAt
-}
-
 type LoginBufferResult struct {
 	LoginBuffer string
 	Credentials LoginBufferCredentials
 	Refreshed   bool
 }
+
+// CredentialError 表示上游明确拒绝凭证（刷新令牌失效等），
+// 与网络超时、临时 5xx 等可重试错误区分开。
+type CredentialError struct {
+	Reason string
+}
+
+func (e *CredentialError) Error() string { return e.Reason }
 
 type LoginBufferClient struct {
 	httpClient *http.Client
@@ -117,7 +121,7 @@ func (c *LoginBufferClient) FetchLoginBuffer(ctx context.Context, creds LoginBuf
 
 func (c *LoginBufferClient) RefreshCredentials(ctx context.Context, creds LoginBufferCredentials) (LoginBufferCredentials, error) {
 	if creds.RefreshToken == "" {
-		return LoginBufferCredentials{}, fmt.Errorf("missing refresh token")
+		return LoginBufferCredentials{}, &CredentialError{Reason: "missing refresh token"}
 	}
 	body, err := json.Marshal(refreshTokenRequest{UserInfo: refreshTokenUserInfo{
 		OpenID:       creds.OpenID,
@@ -140,7 +144,7 @@ func (c *LoginBufferClient) RefreshCredentials(ctx context.Context, creds LoginB
 		return LoginBufferCredentials{}, err
 	}
 	if intFromAny(data["code"]) != 0 {
-		return LoginBufferCredentials{}, fmt.Errorf("refresh failed: code=%v msg=%v", data["code"], data["msg"])
+		return LoginBufferCredentials{}, &CredentialError{Reason: fmt.Sprintf("refresh failed: code=%v msg=%v", data["code"], data["msg"])}
 	}
 	info, _ := data["user_info"].(map[string]any)
 	expiresIn := defaultInt64(int64FromMap(info, "expires_in"), 7200)
@@ -152,7 +156,7 @@ func (c *LoginBufferClient) RefreshCredentials(ctx context.Context, creds LoginB
 	refreshed.ExpiresIn = expiresIn
 	refreshed.ExpiresAt = time.Now().Unix() + expiresIn
 	if refreshed.AccessToken == "" {
-		return LoginBufferCredentials{}, fmt.Errorf("refresh response missing access_token")
+		return LoginBufferCredentials{}, &CredentialError{Reason: "refresh response missing access_token"}
 	}
 	return refreshed, nil
 }

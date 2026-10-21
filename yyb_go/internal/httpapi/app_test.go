@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"yyb_go/internal/store"
 )
 
 const testAdminUser = "admin"
@@ -162,7 +165,7 @@ func TestHandlerServesGinRoutesAndSwaggerDocs(t *testing.T) {
 	if !ok {
 		t.Fatalf("OpenAPI paths missing or invalid")
 	}
-	for _, path := range []string{"/auth/login", "/auth/logout", "/auth/me", "/auth/password", "/auth/token", "/wxapp/getCode", "/wxapp/getPhoneNumber", "/wxapp/operateWxData", "/accounts/avatar", "/dashboard/metrics"} {
+	for _, path := range []string{"/auth/login", "/auth/logout", "/auth/me", "/auth/password", "/auth/token", "/wxapp/getCode", "/wxapp/getPhoneNumber", "/wxapp/operateWxData", "/accounts/avatar", "/accounts/bark", "/accounts/bark/test", "/dashboard/metrics"} {
 		if _, ok := paths[path]; !ok {
 			t.Fatalf("OpenAPI path %s missing", path)
 		}
@@ -422,6 +425,104 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 	static := authedRequest(handler, nil, http.MethodGet, "/static/css/base.css", nil)
 	if static.Code != http.StatusOK {
 		t.Fatalf("GET /static/css/base.css status = %d", static.Code)
+	}
+}
+
+func TestHealthReportsDatabaseFailure(t *testing.T) {
+	app, handler := newTestApp(t)
+	if err := app.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	rec := authedRequest(handler, nil, http.MethodGet, "/health", nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /health with closed db status = %d, want 503", rec.Code)
+	}
+}
+
+func TestLoginRateLimitedByIP(t *testing.T) {
+	_, handler := newTestApp(t)
+	wrong := []byte(`{"username":"admin","password":"wrong-password"}`)
+	for i := 0; i < loginMaxFailures; i++ {
+		rec := authedRequest(handler, nil, http.MethodPost, "/auth/login", wrong)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("failed login %d status = %d, body = %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	blocked := authedRequest(handler, nil, http.MethodPost, "/auth/login", wrong)
+	if blocked.Code != http.StatusTooManyRequests {
+		t.Fatalf("login after %d failures status = %d, want 429", loginMaxFailures, blocked.Code)
+	}
+	if blocked.Header().Get("Retry-After") == "" {
+		t.Fatalf("429 response missing Retry-After header")
+	}
+	// 封禁期间即使密码正确也应拒绝。
+	good := authedRequest(handler, nil, http.MethodPost, "/auth/login",
+		[]byte(`{"username":"`+testAdminUser+`","password":"`+testAdminPass+`"}`))
+	if good.Code != http.StatusTooManyRequests {
+		t.Fatalf("correct password during block status = %d, want 429", good.Code)
+	}
+}
+
+func TestRequestBodyTooLarge(t *testing.T) {
+	_, handler := newTestApp(t)
+	payload := bytes.Repeat([]byte("a"), int(maxRequestBodyBytes)+1)
+	rec := authedRequest(handler, nil, http.MethodPost, "/auth/login", payload)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body status = %d, want 413", rec.Code)
+	}
+}
+
+func TestChangePasswordRequiresCookieSession(t *testing.T) {
+	app, handler := newTestApp(t)
+	cookie := loginForTest(t, handler, testAdminUser, testAdminPass)
+	if _, err := app.db.UpsertAccount(context.Background(), "openid-token", "buffer", nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	token := issueTokenForTest(t, handler, cookie, "openid-token")
+	body := []byte(`{"old_password":"` + testAdminPass + `","new_password":"new-password-456"}`)
+	rec := bearerRequest(handler, token, http.MethodPost, "/auth/password", body)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("change password with bearer token status = %d, want 401", rec.Code)
+	}
+}
+
+func TestIsBlockedIP(t *testing.T) {
+	blocked := []string{"127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.100.100.200", "::1", "fd00::1"}
+	for _, value := range blocked {
+		if !isBlockedIP(net.ParseIP(value)) {
+			t.Fatalf("isBlockedIP(%s) = false, want true", value)
+		}
+	}
+	for _, value := range []string{"8.8.8.8", "1.1.1.1", "2001:4860:4860::8888"} {
+		if isBlockedIP(net.ParseIP(value)) {
+			t.Fatalf("isBlockedIP(%s) = true, want false", value)
+		}
+	}
+}
+
+func TestAPILogWriterFlushesPendingEntries(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.apiLogs.enqueue(store.APICallLog{
+		Endpoint:   "/wxapp/getCode",
+		Method:     http.MethodPost,
+		ClientIP:   "10.0.0.1",
+		StatusCode: http.StatusOK,
+		Success:    true,
+		DurationMS: 12,
+		CreatedAt:  time.Now().Unix(),
+	})
+	// Close 会先清空队列再退出，确保停机时不丢日志。
+	app.apiLogs.Close()
+
+	items, total, err := app.db.ListAPICallLogs(context.Background(), store.APICallLogFilter{Limit: 20})
+	if err != nil {
+		t.Fatalf("ListAPICallLogs() error = %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("api log total=%d items=%d, want 1", total, len(items))
+	}
+	if items[0].Endpoint != "/wxapp/getCode" {
+		t.Fatalf("api log endpoint = %q", items[0].Endpoint)
 	}
 }
 

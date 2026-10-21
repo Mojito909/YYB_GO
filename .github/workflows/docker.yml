@@ -32,6 +32,14 @@ jobs:
           go-version-file: yyb_go/go.mod
           cache-dependency-path: yyb_go/go.sum
 
+      - name: Check formatting
+        working-directory: yyb_go
+        run: test -z "$(gofmt -l ./cmd ./internal)"
+
+      - name: Vet
+        working-directory: yyb_go
+        run: go vet ./...
+
       - name: Run tests
         working-directory: yyb_go
         run: go test ./...

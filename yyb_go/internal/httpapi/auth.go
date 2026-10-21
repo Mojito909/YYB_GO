@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,17 +29,36 @@ const (
 	authCookieName = "yyb_session"
 	adminUserEnv   = "YYB_ADMIN_USER"
 	adminPassEnv   = "YYB_ADMIN_PASSWORD"
-	minPasswordLen = 6
+	minPasswordLen = 8
+
+	// 登录失败限流：窗口内失败达到阈值后暂时封禁来源 IP。
+	loginMaxFailures   = 5
+	loginFailureWindow = 5 * time.Minute
+	loginBlockDuration = 5 * time.Minute
+	loginLimiterMaxKey = 1024
 )
 
 // authManager 管理管理员登录会话。会话保存在内存中，服务重启后需重新登录。
 type authManager struct {
-	db         *store.DB
-	ttl        time.Duration
-	cookieName string
+	db           *store.DB
+	ttl          time.Duration
+	cookieName   string
+	trustProxy   bool
+	secureCookie bool
+	// dummyHash 用于用户不存在时仍执行一次 bcrypt，避免通过响应耗时枚举用户名。
+	dummyHash []byte
 
 	mu       sync.Mutex
 	sessions map[string]*authSession
+
+	failMu        sync.Mutex
+	loginFailures map[string]*loginFailure
+}
+
+type loginFailure struct {
+	count        int
+	windowStart  time.Time
+	blockedUntil time.Time
 }
 
 type authSession struct {
@@ -46,15 +66,20 @@ type authSession struct {
 	expiresAt time.Time
 }
 
-func newAuthManager(db *store.DB, ttl time.Duration) *authManager {
+func newAuthManager(db *store.DB, ttl time.Duration, trustProxy, secureCookie bool) *authManager {
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
+	dummyHash, _ := bcrypt.GenerateFromPassword([]byte("yyb-invalid-password"), bcrypt.DefaultCost)
 	return &authManager{
-		db:         db,
-		ttl:        ttl,
-		cookieName: authCookieName,
-		sessions:   map[string]*authSession{},
+		db:            db,
+		ttl:           ttl,
+		cookieName:    authCookieName,
+		trustProxy:    trustProxy,
+		secureCookie:  secureCookie,
+		dummyHash:     dummyHash,
+		sessions:      map[string]*authSession{},
+		loginFailures: map[string]*loginFailure{},
 	}
 }
 
@@ -96,6 +121,65 @@ func (m *authManager) bootstrap(ctx context.Context) error {
 	return nil
 }
 
+// loginBlocked 返回剩余封禁时长；未封禁时返回 0。
+func (m *authManager) loginBlocked(keys ...string) time.Duration {
+	now := time.Now()
+	m.failMu.Lock()
+	defer m.failMu.Unlock()
+	var longest time.Duration
+	for _, key := range keys {
+		entry := m.loginFailures[key]
+		if entry == nil {
+			continue
+		}
+		if entry.blockedUntil.After(now) {
+			if wait := entry.blockedUntil.Sub(now); wait > longest {
+				longest = wait
+			}
+			continue
+		}
+		if now.Sub(entry.windowStart) > loginFailureWindow {
+			delete(m.loginFailures, key)
+		}
+	}
+	return longest
+}
+
+// recordLoginFailure 记录一次失败；同一窗口内达到阈值后进入封禁状态。
+func (m *authManager) recordLoginFailure(keys ...string) {
+	now := time.Now()
+	m.failMu.Lock()
+	defer m.failMu.Unlock()
+	if len(m.loginFailures) > loginLimiterMaxKey {
+		for key, entry := range m.loginFailures {
+			if !entry.blockedUntil.After(now) && now.Sub(entry.windowStart) > loginFailureWindow {
+				delete(m.loginFailures, key)
+			}
+		}
+	}
+	for _, key := range keys {
+		entry := m.loginFailures[key]
+		if entry == nil || now.Sub(entry.windowStart) > loginFailureWindow {
+			m.loginFailures[key] = &loginFailure{count: 1, windowStart: now}
+			continue
+		}
+		entry.count++
+		if entry.count >= loginMaxFailures {
+			entry.count = 0
+			entry.windowStart = now
+			entry.blockedUntil = now.Add(loginBlockDuration)
+		}
+	}
+}
+
+func (m *authManager) clearLoginFailures(keys ...string) {
+	m.failMu.Lock()
+	defer m.failMu.Unlock()
+	for _, key := range keys {
+		delete(m.loginFailures, key)
+	}
+}
+
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -116,23 +200,35 @@ func (m *authManager) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
+	// 按来源 IP 限流，避免爆破；不按用户名锁定，防止攻击者恶意锁死管理员账号。
+	failKeys := []string{"ip:" + requestClientIP(r, m.trustProxy)}
+	if wait := m.loginBlocked(failKeys...); wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, "登录尝试过于频繁，请稍后再试")
+		return
+	}
 	user, err := m.db.GetAdminUser(r.Context(), body.Username)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			// 用户不存在时也执行一次 bcrypt，避免通过响应耗时枚举用户名。
+			_ = bcrypt.CompareHashAndPassword(m.dummyHash, []byte(body.Password))
+			m.recordLoginFailure(failKeys...)
 			// 与密码错误保持一致的响应，避免用户名枚举
 			writeError(w, http.StatusUnauthorized, "用户名或密码不正确")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(body.Password)) != nil {
+		m.recordLoginFailure(failKeys...)
 		writeError(w, http.StatusUnauthorized, "用户名或密码不正确")
 		return
 	}
+	m.clearLoginFailures(failKeys...)
 	token, err := m.createSession(user.Username)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	http.SetCookie(w, m.sessionCookie(r, token, m.ttl))
@@ -175,7 +271,8 @@ func (m *authManager) handleChangePassword(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	username, ok := m.currentUsername(r)
+	// 修改密码只接受管理后台 Cookie 会话，不接受账号级 API 令牌。
+	username, ok := m.currentCookieUsername(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
@@ -190,12 +287,12 @@ func (m *authManager) handleChangePassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if len(body.NewPassword) < minPasswordLen {
-		writeError(w, http.StatusBadRequest, "新密码至少 6 位")
+		writeError(w, http.StatusBadRequest, "新密码至少 8 位")
 		return
 	}
 	user, err := m.db.GetAdminUser(r.Context(), username)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(body.OldPassword)) != nil {
@@ -204,15 +301,15 @@ func (m *authManager) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(body.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if err := m.db.SetAdminPassword(r.Context(), username, string(hash)); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if err := m.db.RevokeAllAPITokens(r.Context(), username); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	// 改密后销毁其他会话，仅保留当前会话
@@ -242,7 +339,7 @@ func (m *authManager) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method == http.MethodDelete {
 			if err := m.db.RevokeAPITokens(r.Context(), username, acc.ID); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+				writeInternalError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "account_id": acc.ID})
@@ -250,12 +347,12 @@ func (m *authManager) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 		raw := make([]byte, 32)
 		if _, err := rand.Read(raw); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		token := "yyb_" + hex.EncodeToString(raw)
 		if err := m.db.RotateAPIToken(r.Context(), username, acc.ID, hashAPIToken(token)); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -273,7 +370,7 @@ func (m *authManager) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 		meta, err := m.db.ActiveAPITokenMeta(r.Context(), username, acc.ID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		if meta == nil {
@@ -299,10 +396,14 @@ func (m *authManager) resolveTokenAccount(w http.ResponseWriter, r *http.Request
 	}
 	acc, err := m.db.ResolveAccount(r.Context(), ref)
 	if err != nil {
+		if errors.Is(err, store.ErrAmbiguousRef) {
+			writeError(w, http.StatusBadRequest, "ref 同时匹配多个账号，请使用 id: / uin: / openid: 前缀")
+			return nil, false
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "account not found: "+ref)
 		} else {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 		}
 		return nil, false
 	}
@@ -389,10 +490,13 @@ func (m *authManager) authorizeToken(c *gin.Context, p principal) bool {
 	}
 	acc, err := m.db.ResolveAccount(c.Request.Context(), ref)
 	if err != nil {
+		if errors.Is(err, store.ErrAmbiguousRef) {
+			return abort(http.StatusBadRequest, "ref 同时匹配多个账号，请使用 id: / uin: / openid: 前缀")
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			return abort(http.StatusNotFound, "account not found: "+ref)
 		}
-		return abort(http.StatusInternalServerError, err.Error())
+		return abort(http.StatusInternalServerError, "internal server error")
 	}
 	if acc.ID != p.accountID {
 		return abort(http.StatusForbidden, "API 令牌与目标账号不匹配")
@@ -533,7 +637,7 @@ func (m *authManager) sessionCookie(r *http.Request, token string, ttl time.Dura
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   m.secureCookie || r.TLS != nil || (m.trustProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(ttl / time.Second),
 	}

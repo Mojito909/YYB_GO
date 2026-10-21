@@ -45,7 +45,7 @@ go run ./cmd/yyb-go -host 127.0.0.1 -port 8000
 
 登录后台后，进入「账号管理」，在账号卡片点「令牌」或在详情抽屉点「API 令牌」为该账号生成令牌。令牌与账号一对一绑定，只能操作绑定的那个账号。
 
-也可以直接调用接口生成（需要先用管理员会话登录，`ref` 支持账号 id / uin / openid）：
+也可以直接调用接口生成（需要先用管理员会话登录，`ref` 支持账号 id / uin / openid；如果纯数字同时命中 id 和 uin，接口会返回 400，此时请改用 `id:1`、`uin:123` 或 `openid:xxx` 前缀）：
 
 ```bash
 curl -b cookie.txt -H "Content-Type: application/json" \
@@ -63,6 +63,16 @@ curl -H "Authorization: Bearer YOUR_API_TOKEN" \
 令牌场景下 `GET /accounts` 只返回绑定的那一条账号，因此青龙脚本无需再配置 `YYB_ACCOUNTS`。令牌只能访问 `GET /accounts`、`GET /accounts/avatar`、`POST /accounts/refresh`、`POST /accounts/resync`、`POST /wxapp/getCode`、`POST /wxapp/getPhoneNumber`、`POST /wxapp/operateWxData`，访问其他接口或其他账号的 `ref` 会返回 403。
 
 同一账号重新生成令牌会使该账号的旧令牌立即失效（不影响其他账号），修改管理员密码会撤销全部令牌。令牌只在生成时显示一次，请妥善保存。
+
+## Bark 通知
+
+账号登录失效时可通过 [Bark](https://bark.day.app/#/?id=bark) 推送到 iPhone。通知按账号独立配置：
+
+1. 在账号卡片点击「Bark」。
+2. 粘贴 Bark App 中的 device key，可先点「发送测试」确认，再点「保存」；留空保存表示关闭通知。
+3. 同一轮失效只推送一次；账号恢复可用后，下一次失领会重新推送。
+
+自建 Bark 服务通过 `-bark-server` 或 `YYB_BARK_SERVER` 指定，例如 `YYB_BARK_SERVER=https://bark.example.com`；未设置时使用 `https://api.day.app`。
 
 ## Docker
 
@@ -99,6 +109,8 @@ docker run -d \
   joey772/yyb-go:latest
 ```
 
+如果服务位于 Nginx、Caddy 等反向代理之后，追加 `-e YYB_TRUST_PROXY=true` 让服务信任 `X-Forwarded-For` / `X-Forwarded-Proto`；需要强制会话 Cookie 仅通过 HTTPS 传输时追加 `-e YYB_SECURE_COOKIE=true`。直接暴露端口时不要开启 `YYB_TRUST_PROXY`，否则来源 IP 和审计日志可被伪造。
+
 
 ## 项目结构
 
@@ -117,6 +129,7 @@ yyb_go/
 ```bash
 cd yyb_go
 gofmt -w ./cmd ./internal
+go vet ./...
 go test ./...
 go build ./cmd/yyb-go
 ```

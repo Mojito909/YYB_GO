@@ -9,7 +9,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +29,8 @@ CREATE TABLE IF NOT EXISTS wechat_accounts (
     credentials     TEXT,
     status          TEXT,
     last_checked_at INTEGER,
+    bark_key        TEXT    NOT NULL DEFAULT '',
+    expired_notified INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
@@ -47,13 +48,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     UNIQUE(wechat_account_id, tcp_proxy)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
-
-CREATE TABLE IF NOT EXISTS features (
-    code        INTEGER PRIMARY KEY,
-    name        TEXT    NOT NULL UNIQUE,
-    description TEXT,
-    enabled     INTEGER NOT NULL DEFAULT 1
-);
 
 CREATE TABLE IF NOT EXISTS admin_users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,30 +95,26 @@ CREATE INDEX IF NOT EXISTS idx_api_logs_ip ON api_call_logs(client_ip);
 CREATE INDEX IF NOT EXISTS idx_api_logs_endpoint ON api_call_logs(endpoint);
 `
 
-var defaultFeatures = []Feature{
-	{Code: 1001, Name: "getCode", Description: stringPtr("wx.login code"), Enabled: true},
-	{Code: 1002, Name: "getPhoneNumber", Description: stringPtr("取手机号"), Enabled: true},
-	{Code: 1003, Name: "operateWxData", Description: stringPtr("通用云函数代理"), Enabled: true},
-}
-
 type DB struct {
 	sql *sql.DB
 }
 
 type WechatAccount struct {
-	ID            int64          `json:"id"`
-	OpenID        string         `json:"openid"`
-	UIN           *int64         `json:"uin,omitempty"`
-	Alias         *string        `json:"alias,omitempty"`
-	Nickname      *string        `json:"nickname,omitempty"`
-	Avatar        *string        `json:"avatar,omitempty"`
-	UserInfo      map[string]any `json:"user_info,omitempty"`
-	LoginBuffer   string         `json:"login_buffer,omitempty"`
-	Credentials   map[string]any `json:"credentials,omitempty"`
-	Status        *string        `json:"status,omitempty"`
-	LastCheckedAt *int64         `json:"last_checked_at,omitempty"`
-	CreatedAt     int64          `json:"created_at"`
-	UpdatedAt     int64          `json:"updated_at"`
+	ID              int64          `json:"id"`
+	OpenID          string         `json:"openid"`
+	UIN             *int64         `json:"uin,omitempty"`
+	Alias           *string        `json:"alias,omitempty"`
+	Nickname        *string        `json:"nickname,omitempty"`
+	Avatar          *string        `json:"avatar,omitempty"`
+	UserInfo        map[string]any `json:"user_info,omitempty"`
+	LoginBuffer     string         `json:"login_buffer,omitempty"`
+	Credentials     map[string]any `json:"credentials,omitempty"`
+	Status          *string        `json:"status,omitempty"`
+	LastCheckedAt   *int64         `json:"last_checked_at,omitempty"`
+	BarkKey         string         `json:"-"`
+	ExpiredNotified bool           `json:"-"`
+	CreatedAt       int64          `json:"created_at"`
+	UpdatedAt       int64          `json:"updated_at"`
 }
 
 type AccountPublic struct {
@@ -136,6 +126,7 @@ type AccountPublic struct {
 	Avatar        *string `json:"avatar"`
 	Status        *string `json:"status"`
 	LastCheckedAt *int64  `json:"last_checked_at"`
+	BarkEnabled   bool    `json:"bark_enabled"`
 	CreatedAt     int64   `json:"created_at"`
 	UpdatedAt     int64   `json:"updated_at"`
 }
@@ -149,13 +140,6 @@ type SessionRow struct {
 	ExpiresAt       int64
 	CreatedAt       int64
 	UpdatedAt       int64
-}
-
-type Feature struct {
-	Code        int     `json:"code"`
-	Name        string  `json:"name"`
-	Description *string `json:"description"`
-	Enabled     bool    `json:"enabled"`
 }
 
 type AdminUser struct {
@@ -205,10 +189,10 @@ type APICallLogFilter struct {
 }
 
 type APIMetricBucket struct {
-	Label    string `json:"label"`
-	Calls    int64  `json:"calls"`
-	Success  int64  `json:"success"`
-	Failed   int64  `json:"failed"`
+	Label   string `json:"label"`
+	Calls   int64  `json:"calls"`
+	Success int64  `json:"success"`
+	Failed  int64  `json:"failed"`
 }
 
 type APIMetrics struct {
@@ -223,13 +207,23 @@ type APIMetrics struct {
 	Buckets       []APIMetricBucket `json:"buckets"`
 }
 
+// sqliteDSN 把连接级 PRAGMA 放进 DSN，确保每个新建连接都应用相同设置，
+// 而不是只在启动时的第一个连接上生效。
+func sqliteDSN(path string) string {
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
+	if path != ":memory:" {
+		dsn += "&_pragma=journal_mode(WAL)"
+	}
+	return dsn
+}
+
 func Open(path string) (*DB, error) {
 	if path != ":memory:" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return nil, err
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, err
 	}
@@ -237,15 +231,10 @@ func Open(path string) (*DB, error) {
 	db.SetMaxIdleConns(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err = db.ExecContext(ctx, "PRAGMA busy_timeout=5000"); err != nil {
+	if _, err = db.ExecContext(ctx, "SELECT 1"); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	if path != ":memory:" {
-		_, _ = db.ExecContext(ctx, "PRAGMA journal_mode=WAL")
-	}
-	_, _ = db.ExecContext(ctx, "PRAGMA synchronous=NORMAL")
-	_, _ = db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
 	if err = migrateSessionsTable(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -258,21 +247,50 @@ func Open(path string) (*DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err = migrateAccountsBarkColumns(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err = db.ExecContext(ctx, schema); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	out := &DB{sql: db}
-	if err = out.EnsureDefaultFeatures(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	if err = out.ensureAPILogSettings(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	_, _ = out.PruneAPICallLogs(ctx)
+	_, _ = out.PurgeExpiredSessions(ctx)
 	return out, nil
+}
+
+// migrateAccountsBarkColumns 为旧库补充 Bark 通知相关列。
+func migrateAccountsBarkColumns(ctx context.Context, db *sql.DB) error {
+	exists, err := sqliteTableExists(ctx, db, "wechat_accounts")
+	if err != nil || !exists {
+		return err
+	}
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{"bark_key", "ALTER TABLE wechat_accounts ADD COLUMN bark_key TEXT NOT NULL DEFAULT ''"},
+		{"expired_notified", "ALTER TABLE wechat_accounts ADD COLUMN expired_notified INTEGER NOT NULL DEFAULT 0"},
+	}
+	for _, col := range columns {
+		has, err := sqliteColumnExists(ctx, db, "wechat_accounts", col.name)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err = db.ExecContext(ctx, col.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateAPICallLogsTable(ctx context.Context, db *sql.DB) error {
@@ -295,17 +313,12 @@ func (db *DB) Close() error {
 	return db.sql.Close()
 }
 
-func (db *DB) EnsureDefaultFeatures(ctx context.Context) error {
-	for _, f := range defaultFeatures {
-		desc := nullableString(f.Description)
-		if _, err := db.sql.ExecContext(ctx,
-			"INSERT OR IGNORE INTO features(code, name, description, enabled) VALUES(?,?,?,1)",
-			f.Code, f.Name, desc,
-		); err != nil {
-			return err
-		}
+// Ping 检查数据库连接是否可用。
+func (db *DB) Ping(ctx context.Context) error {
+	if db == nil || db.sql == nil {
+		return errors.New("database is closed")
 	}
-	return nil
+	return db.sql.PingContext(ctx)
 }
 
 func migrateSessionsTable(ctx context.Context, db *sql.DB) error {
@@ -396,7 +409,7 @@ func (db *DB) UpsertAccount(ctx context.Context, openid, loginBuffer string, ali
 		ON CONFLICT(openid) DO UPDATE SET
 		login_buffer=excluded.login_buffer, alias=excluded.alias, nickname=excluded.nickname,
 		avatar=excluded.avatar, user_info=excluded.user_info, credentials=excluded.credentials,
-		status=excluded.status, updated_at=excluded.updated_at`,
+		status=excluded.status, expired_notified=0, updated_at=excluded.updated_at`,
 		openid, loginBuffer, nullableString(alias), nullableString(nickname), nullableString(avatar),
 		userJSON, credJSON, nullableString(status), now, now,
 	)
@@ -418,18 +431,49 @@ func (db *DB) GetAccountByUIN(ctx context.Context, uin int64) (*WechatAccount, e
 	return db.scanAccount(db.sql.QueryRowContext(ctx, selectAccountSQL+" WHERE uin=?", uin))
 }
 
+// ErrAmbiguousRef 表示纯数字 ref 同时匹配到了不同的账号 id 和 uin。
+var ErrAmbiguousRef = errors.New("ambiguous account ref")
+
+// ResolveAccount 支持 openid、纯数字（uin 或 id）以及 id: / uin: / openid: 前缀。
+// 纯数字同时命中两个不同账号时返回 ErrAmbiguousRef，提示调用方使用前缀。
 func (db *DB) ResolveAccount(ctx context.Context, ref string) (*WechatAccount, error) {
+	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return nil, sql.ErrNoRows
 	}
-	if isDigits(ref) {
-		n, _ := strconv.ParseInt(ref, 10, 64)
-		if acc, err := db.GetAccountByUIN(ctx, n); err == nil {
-			return acc, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
+	switch {
+	case strings.HasPrefix(ref, "id:"):
+		n, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(ref, "id:")), 10, 64)
+		if err != nil {
+			return nil, sql.ErrNoRows
 		}
 		return db.GetAccount(ctx, n)
+	case strings.HasPrefix(ref, "uin:"):
+		n, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(ref, "uin:")), 10, 64)
+		if err != nil {
+			return nil, sql.ErrNoRows
+		}
+		return db.GetAccountByUIN(ctx, n)
+	case strings.HasPrefix(ref, "openid:"):
+		return db.GetAccountByOpenID(ctx, strings.TrimSpace(strings.TrimPrefix(ref, "openid:")))
+	}
+	if isDigits(ref) {
+		n, _ := strconv.ParseInt(ref, 10, 64)
+		byUIN, uinErr := db.GetAccountByUIN(ctx, n)
+		if uinErr != nil && !errors.Is(uinErr, sql.ErrNoRows) {
+			return nil, uinErr
+		}
+		byID, idErr := db.GetAccount(ctx, n)
+		if idErr != nil && !errors.Is(idErr, sql.ErrNoRows) {
+			return nil, idErr
+		}
+		if uinErr == nil && idErr == nil && byUIN.ID != byID.ID {
+			return nil, fmt.Errorf("%w: %s", ErrAmbiguousRef, ref)
+		}
+		if uinErr == nil {
+			return byUIN, nil
+		}
+		return byID, idErr
 	}
 	return db.GetAccountByOpenID(ctx, ref)
 }
@@ -482,11 +526,43 @@ func (db *DB) SetAccountCredential(ctx context.Context, id int64, loginBuffer st
 
 func (db *DB) SetAccountStatus(ctx context.Context, id int64, status string) error {
 	now := time.Now().Unix()
+	// 账号恢复可用后重置通知标记，下一次失效可以再次推送。
+	if status == "alive" {
+		_, err := db.sql.ExecContext(ctx,
+			"UPDATE wechat_accounts SET status=?, last_checked_at=?, updated_at=?, expired_notified=0 WHERE id=?",
+			status, now, now, id,
+		)
+		return err
+	}
 	_, err := db.sql.ExecContext(ctx,
 		"UPDATE wechat_accounts SET status=?, last_checked_at=?, updated_at=? WHERE id=?",
 		status, now, now, id,
 	)
 	return err
+}
+
+// SetAccountBark 保存账号的 Bark device key，空字符串表示关闭通知。
+func (db *DB) SetAccountBark(ctx context.Context, id int64, key string) error {
+	_, err := db.sql.ExecContext(ctx,
+		"UPDATE wechat_accounts SET bark_key=?, updated_at=? WHERE id=?",
+		key, time.Now().Unix(), id,
+	)
+	return err
+}
+
+// ClaimAccountExpiredNotification 原子地领取一次失效通知。
+// 返回 true 表示本次调用成功抢占，应发送推送；重复调用返回 false。
+func (db *DB) ClaimAccountExpiredNotification(ctx context.Context, id int64) (bool, error) {
+	res, err := db.sql.ExecContext(ctx,
+		"UPDATE wechat_accounts SET expired_notified=1 WHERE id=? AND expired_notified=0", id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func (db *DB) DeleteAccount(ctx context.Context, id int64) error {
@@ -534,63 +610,6 @@ func (db *DB) PurgeExpiredSessions(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return res.RowsAffected()
-}
-
-func (db *DB) ListFeatures(ctx context.Context, onlyEnabled bool) ([]Feature, error) {
-	sqlText := "SELECT code, name, description, enabled FROM features"
-	if onlyEnabled {
-		sqlText += " WHERE enabled=1"
-	}
-	sqlText += " ORDER BY code"
-	rows, err := db.sql.QueryContext(ctx, sqlText)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Feature
-	for rows.Next() {
-		f, err := scanFeature(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
-}
-
-func (db *DB) ResolveFeature(ctx context.Context, ref any) (*Feature, error) {
-	switch v := ref.(type) {
-	case float64:
-		return db.GetFeature(ctx, int(v))
-	case int:
-		return db.GetFeature(ctx, v)
-	case string:
-		if isDigits(v) {
-			n, _ := strconv.Atoi(v)
-			return db.GetFeature(ctx, n)
-		}
-		return db.GetFeatureByName(ctx, v)
-	default:
-		return nil, sql.ErrNoRows
-	}
-}
-
-func (db *DB) GetFeature(ctx context.Context, code int) (*Feature, error) {
-	row := db.sql.QueryRowContext(ctx, "SELECT code, name, description, enabled FROM features WHERE code=?", code)
-	f, err := scanFeature(row)
-	if err != nil {
-		return nil, err
-	}
-	return &f, nil
-}
-
-func (db *DB) GetFeatureByName(ctx context.Context, name string) (*Feature, error) {
-	row := db.sql.QueryRowContext(ctx, "SELECT code, name, description, enabled FROM features WHERE name=? COLLATE NOCASE", name)
-	f, err := scanFeature(row)
-	if err != nil {
-		return nil, err
-	}
-	return &f, nil
 }
 
 // CountAdminUsers 返回管理员用户数量，用于判断是否需要初始化引导账号。
@@ -656,26 +675,31 @@ func (db *DB) RotateAPIToken(ctx context.Context, username string, accountID int
 	return tx.Commit()
 }
 
+// apiTokenTouchInterval 限制 last_used_at 的写入频率，避免每个请求都产生一次写事务。
+const apiTokenTouchInterval = 60
+
 // ValidateAPIToken 校验令牌哈希，返回所属管理员用户名与绑定的账号 ID。
 func (db *DB) ValidateAPIToken(ctx context.Context, tokenHash string) (string, int64, bool, error) {
 	var username string
 	var id, accountID int64
+	var lastUsed sql.NullInt64
 	err := db.sql.QueryRowContext(ctx,
-		"SELECT id, username, account_id FROM api_tokens WHERE token_hash=? AND revoked_at IS NULL",
+		"SELECT id, username, account_id, last_used_at FROM api_tokens WHERE token_hash=? AND revoked_at IS NULL",
 		tokenHash,
-	).Scan(&id, &username, &accountID)
+	).Scan(&id, &username, &accountID, &lastUsed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", 0, false, nil
 	}
 	if err != nil {
 		return "", 0, false, err
 	}
-	_, err = db.sql.ExecContext(ctx,
-		"UPDATE api_tokens SET last_used_at=? WHERE id=?",
-		time.Now().Unix(), id,
-	)
-	if err != nil {
-		return "", 0, false, err
+	now := time.Now().Unix()
+	if !lastUsed.Valid || now-lastUsed.Int64 >= apiTokenTouchInterval {
+		// 最近使用时间是辅助元数据，写入失败不影响本次鉴权结果。
+		_, _ = db.sql.ExecContext(ctx,
+			"UPDATE api_tokens SET last_used_at=? WHERE id=?",
+			now, id,
+		)
 	}
 	return username, accountID, true, nil
 }
@@ -745,16 +769,35 @@ func (db *DB) SetAPILogRetention(ctx context.Context, days int) (APILogSettings,
 }
 
 func (db *DB) RecordAPICall(ctx context.Context, log APICallLog) error {
-	_, err := db.sql.ExecContext(ctx, `INSERT INTO api_call_logs
-		(account_id, account_ref, endpoint, method, app_id, client_ip, program, status_code, success, duration_ms, error_message, created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		log.AccountID, log.AccountRef, log.Endpoint, log.Method, log.AppID, log.ClientIP, "",
-		log.StatusCode, boolInt(log.Success), log.DurationMS, log.ErrorMessage, log.CreatedAt)
+	return db.InsertAPICallLogs(ctx, []APICallLog{log})
+}
+
+// InsertAPICallLogs 在一个事务内批量写入接口日志。
+// 过期清理由调用方的定时任务负责，避免每次调用都触发 DELETE。
+func (db *DB) InsertAPICallLogs(ctx context.Context, logs []APICallLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	_, err = db.PruneAPICallLogs(ctx)
-	return err
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO api_call_logs
+		(account_id, account_ref, endpoint, method, app_id, client_ip, program, status_code, success, duration_ms, error_message, created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, log := range logs {
+		if _, err = stmt.ExecContext(ctx,
+			log.AccountID, log.AccountRef, log.Endpoint, log.Method, log.AppID, log.ClientIP, "",
+			log.StatusCode, boolInt(log.Success), log.DurationMS, log.ErrorMessage, log.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (db *DB) PruneAPICallLogs(ctx context.Context) (int64, error) {
@@ -873,62 +916,63 @@ func (db *DB) GetAPIMetrics(ctx context.Context, period string, now time.Time) (
 			buckets[i].Label = at.Format("01/02")
 		}
 	}
-	rows, err := db.sql.QueryContext(ctx, `SELECT created_at, success, duration_ms, client_ip
-		FROM api_call_logs WHERE created_at >= ? AND created_at <= ? ORDER BY created_at ASC`, start.Unix(), now.Unix())
+	metrics := APIMetrics{Period: period, Buckets: buckets}
+	startUnix, endUnix := start.Unix(), now.Unix()
+	var durationTotal int64
+	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*),
+		COALESCE(SUM(success), 0),
+		COUNT(DISTINCT CASE WHEN client_ip <> '' THEN client_ip END),
+		COALESCE(SUM(duration_ms), 0)
+		FROM api_call_logs WHERE created_at >= ? AND created_at <= ?`,
+		startUnix, endUnix).Scan(&metrics.Calls, &metrics.Success, &metrics.UniqueIPs, &durationTotal); err != nil {
+		return APIMetrics{}, err
+	}
+	metrics.Failed = metrics.Calls - metrics.Success
+
+	rows, err := db.sql.QueryContext(ctx, `SELECT CAST((created_at - ?) / ? AS INTEGER) AS bucket,
+		COUNT(*), COALESCE(SUM(success), 0)
+		FROM api_call_logs WHERE created_at >= ? AND created_at <= ?
+		GROUP BY bucket`, startUnix, int64(bucketSize/time.Second), startUnix, endUnix)
 	if err != nil {
 		return APIMetrics{}, err
 	}
 	defer rows.Close()
-	metrics := APIMetrics{Period: period, Buckets: buckets}
-	ips := make(map[string]struct{})
-	durations := make([]int64, 0)
-	var durationTotal int64
 	for rows.Next() {
-		var createdAt int64
-		var success int
-		var duration int64
-		var ip string
-		if err := rows.Scan(&createdAt, &success, &duration, &ip); err != nil {
+		var index int
+		var calls, success int64
+		if err := rows.Scan(&index, &calls, &success); err != nil {
 			return APIMetrics{}, err
 		}
-		metrics.Calls++
-		if success != 0 {
-			metrics.Success++
-		} else {
-			metrics.Failed++
-		}
-		if ip != "" {
-			ips[ip] = struct{}{}
-		}
-		durationTotal += duration
-		durations = append(durations, duration)
-		index := int(time.Unix(createdAt, 0).Sub(start) / bucketSize)
 		if index < 0 {
 			index = 0
 		}
 		if index >= bucketCount {
 			index = bucketCount - 1
 		}
-		buckets[index].Calls++
-		if success != 0 {
-			buckets[index].Success++
-		} else {
-			buckets[index].Failed++
-		}
+		buckets[index].Calls = calls
+		buckets[index].Success = success
+		buckets[index].Failed = calls - success
 	}
 	if err := rows.Err(); err != nil {
 		return APIMetrics{}, err
 	}
-	metrics.UniqueIPs = int64(len(ips))
 	if metrics.Calls > 0 {
 		metrics.SuccessRate = float64(metrics.Success) / float64(metrics.Calls) * 100
 		metrics.AvgDurationMS = float64(durationTotal) / float64(metrics.Calls)
-		sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
-		index := int(math.Ceil(float64(len(durations))*0.95)) - 1
-		if index < 0 {
-			index = 0
+		offset := int(math.Ceil(float64(metrics.Calls)*0.95)) - 1
+		if offset < 0 {
+			offset = 0
 		}
-		metrics.P95DurationMS = durations[index]
+		var p95 int64
+		err := db.sql.QueryRowContext(ctx, `SELECT duration_ms FROM api_call_logs
+			WHERE created_at >= ? AND created_at <= ?
+			ORDER BY duration_ms ASC LIMIT 1 OFFSET ?`,
+			startUnix, endUnix, offset).Scan(&p95)
+		if err == nil {
+			metrics.P95DurationMS = p95
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return APIMetrics{}, err
+		}
 	}
 	return metrics, nil
 }
@@ -950,18 +994,15 @@ func (a *WechatAccount) Public() AccountPublic {
 		Avatar:        a.Avatar,
 		Status:        a.Status,
 		LastCheckedAt: a.LastCheckedAt,
+		BarkEnabled:   a.BarkKey != "",
 		CreatedAt:     a.CreatedAt,
 		UpdatedAt:     a.UpdatedAt,
 	}
 }
 
-const selectAccountSQL = `SELECT id, openid, uin, alias, nickname, avatar, user_info, login_buffer, credentials, status, last_checked_at, created_at, updated_at FROM wechat_accounts`
+const selectAccountSQL = `SELECT id, openid, uin, alias, nickname, avatar, user_info, login_buffer, credentials, status, last_checked_at, bark_key, expired_notified, created_at, updated_at FROM wechat_accounts`
 
 type accountScanner interface {
-	Scan(dest ...any) error
-}
-
-type featureScanner interface {
 	Scan(dest ...any) error
 }
 
@@ -976,14 +1017,17 @@ func scanAccountRows(row accountScanner) (*WechatAccount, error) {
 		alias, nickname, avatar sql.NullString
 		userJSON, credJSON      sql.NullString
 		status                  sql.NullString
+		expiredNotified         int
 	)
 	err := row.Scan(
 		&a.ID, &a.OpenID, &uin, &alias, &nickname, &avatar, &userJSON,
-		&a.LoginBuffer, &credJSON, &status, &lastChecked, &a.CreatedAt, &a.UpdatedAt,
+		&a.LoginBuffer, &credJSON, &status, &lastChecked, &a.BarkKey, &expiredNotified,
+		&a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	a.ExpiredNotified = expiredNotified != 0
 	if uin.Valid {
 		a.UIN = &uin.Int64
 	}
@@ -1019,18 +1063,6 @@ func scanSession(row accountScanner) (*SessionRow, error) {
 	return &s, nil
 }
 
-func scanFeature(row featureScanner) (Feature, error) {
-	var f Feature
-	var desc sql.NullString
-	var enabled int
-	if err := row.Scan(&f.Code, &f.Name, &desc, &enabled); err != nil {
-		return Feature{}, err
-	}
-	f.Description = stringPtrFromNull(desc)
-	f.Enabled = enabled != 0
-	return f, nil
-}
-
 func marshalNullable(v map[string]any) (sql.NullString, error) {
 	if v == nil {
 		return sql.NullString{}, nil
@@ -1062,8 +1094,6 @@ func stringPtrFromNull(v sql.NullString) *string {
 	}
 	return &v.String
 }
-
-func stringPtr(s string) *string { return &s }
 
 func isDigits(s string) bool {
 	if s == "" {
