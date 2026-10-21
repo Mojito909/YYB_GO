@@ -2,8 +2,6 @@
 
 本文件记录 YYB Go 二次开发版本的重要变更，采用接近 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构。
 
-
-
 变更类型说明：
 
 - `Added`：新增功能
@@ -13,32 +11,20 @@
 - `Deprecated`：计划废弃但暂时保留的功能
 - `Removed`：移除功能
 
-## [Unreleased]
+<br />
 
-### Planned
-
-#### 青龙集成
-
-- 增加独立的青龙脚本示例目录。
-- 增加二维码 Base64 获取和通知渠道推送示例。
-- 增加青龙定时任务的账号存活检查与失败重试模板。
-
-#### 部署
-
-- 增加 Docker Compose 示例。
-- 增加健康检查、优雅停止和持久化目录说明。
-- 增加常见代理和容器网络配置示例。
-
-## [0.2.4] - 2026-10-21
+## \[0.2.4] - 2026-10-21
 
 ### Added
 
 #### Bark 通知
 
-- 账号卡片增加「Bark」入口，可按账号保存 device key、发送测试通知，留空保存表示关闭通知。
+- 账号卡片增加「Bark」入口，可按账号保存 device key 或推送 URL、发送测试通知，留空保存表示关闭通知。
 - 账号登录失效时自动推送 Bark 通知；同一轮失效只推送一次，账号恢复可用后重置，下一次失效可再次通知。
+- 账号从失效恢复为可用时推送一次恢复通知，标题为 `YYB Go 账号恢复`，正文提示已重新可用。
 - 支持 `-bark-server` / `YYB_BARK_SERVER` 指定自建 Bark 服务，默认使用 `https://api.day.app`。
 - 新增 `GET/POST /accounts/bark` 与 `POST /accounts/bark/test` 接口，并补充 OpenAPI 说明。
+- 测试通知失败时区分“device key 未注册”，返回可操作提示，并在弹窗中显示当前推送服务地址。
 
 ### Security
 
@@ -73,7 +59,7 @@
 #### 数据库与会话
 
 - `wechat_accounts` 增加 `bark_key` 和 `expired_notified` 字段，启动时自动为旧库补充缺失列。
-- SQLite 连接级 PRAGMA 移入 DSN，确保每个新建连接都启用 WAL、外键、busy_timeout 和 synchronous。
+- SQLite 连接级 PRAGMA 移入 DSN，确保每个新建连接都启用 WAL、外键、busy\_timeout 和 synchronous。
 - 总览指标改为 SQL 聚合（总计、分桶、P95 三条查询），不再把统计窗口内的全部日志加载进内存。
 - 删除账号时同时清理本地头像文件。
 - 启动时清理一次已过期的协议会话。
@@ -110,7 +96,7 @@
 - 移除未使用的 `requestLogger`、`sortedKeys`、`ScanTimeout` 与 `LoginBufferCredentials.Expired`。
 - `openAPISpec` 移回 OpenAPI 实现文件，避免文档变量散落在 fallback 页面文件中。
 
-## [0.2.3] - 2026-08-26
+## \[0.2.3] - 2026-08-26
 
 ### Added
 
@@ -160,7 +146,7 @@
 - 访问日志仅记录请求路径，不记录完整 URL 查询参数，降低敏感参数进入日志的风险。
 - Docker 日志轮转限制日志文件增长，降低日志持续增长导致磁盘占满的风险。
 
-## [0.2.2] - 2026-08-25
+## \[0.2.2] - 2026-08-25
 
 ### Added
 
@@ -240,7 +226,7 @@
 - 修复 README 中 Markdown 链接未用尖括号包裹导致渲染异常的问题。
 - 精简 README 中 Docker 数据卷的重复说明。
 
-## [0.2.1] - 2026-08-23
+## \[0.2.1] - 2026-08-23
 
 ### Changed
 
@@ -266,9 +252,9 @@
 
 - 修复扫码页停留或导航离开时，控制台出现 `net::ERR_ABORTED` 二维码轮询请求错误日志的问题。
 
-## [0.2.0] - 2026-08-22
+## \[0.2.0] - 2026-08-22
 
-本版本为 YYB Go 的二次开发阶段版本，基于原作者 [SuperNaiBA/YYB_GO](https://github.com/SuperNaiBA/YYB_GO) 持续扩展。
+本版本为 YYB Go 的二次开发阶段版本，基于原作者 [SuperNaiBA/YYB\_GO](https://github.com/SuperNaiBA/YYB_GO) 持续扩展。
 
 ### Added
 
@@ -374,7 +360,7 @@
 - 管理员修改密码后销毁其他活动会话。
 - 账号登录凭证不通过公开账号列表接口返回。
 
-## [0.1.0] - 原始项目基线
+## \[0.1.0] - 原始项目基线
 
 ### Added
 
@@ -385,7 +371,7 @@
 - 目标应用能力调用基础实现。
 - Go 服务端项目基础结构。
 
-原始项目及版权信息请参考：[SuperNaiBA/YYB_GO](https://github.com/SuperNaiBA/YYB_GO)。
+原始项目及版权信息请参考：[SuperNaiBA/YYB\_GO](https://github.com/SuperNaiBA/YYB_GO)。
 
 ## 后续记录规范
 
@@ -430,3 +416,4 @@
 2. 补充发布日期和版本号。
 3. 保留 `Unreleased`，继续记录下一轮开发。
 4. 同步更新 README 的功能和部署说明。
+

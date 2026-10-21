@@ -731,10 +731,24 @@ func (a *App) serveAvatar(w http.ResponseWriter, r *http.Request, acc *store.Wec
 
 func (a *App) storeFromScan(ctx context.Context, loginBuffer string, creds protocol.LoginBufferCredentials, userInfo map[string]any) (*store.WechatAccount, error) {
 	openid := creds.OpenID
+	wasExpired := false
+	if prev, err := a.db.GetAccountByOpenID(ctx, openid); err == nil {
+		wasExpired = prev.Status != nil && *prev.Status == "expired"
+	}
 	nick := pickNickname(userInfo, creds.Nickname)
 	avatar := a.resolveAvatar(ctx, openid, userInfo)
 	status := "alive"
-	return a.db.UpsertAccount(ctx, openid, loginBuffer, stringPtrMaybe(nick), stringPtrMaybe(nick), stringPtrMaybe(avatar), userInfo, creds.ToMap(), &status)
+	acc, err := a.db.UpsertAccount(ctx, openid, loginBuffer, stringPtrMaybe(nick), stringPtrMaybe(nick), stringPtrMaybe(avatar), userInfo, creds.ToMap(), &status)
+	if err != nil {
+		return nil, err
+	}
+	// 重新扫码是失效账号最常见的恢复方式，恢复成功时同样推送一次通知。
+	if wasExpired {
+		if claimed, err := a.db.ClaimAccountRecoveryNotification(ctx, acc.ID); err == nil && claimed {
+			a.notifyAccountRecovered(acc)
+		}
+	}
+	return acc, nil
 }
 
 func (a *App) refreshLiveness(ctx context.Context, acc *store.WechatAccount) string {
@@ -758,7 +772,10 @@ func (a *App) refreshLiveness(ctx context.Context, acc *store.WechatAccount) str
 		return "unknown"
 	}
 	_ = a.db.SetAccountCredential(ctx, acc.ID, result.LoginBuffer, result.Credentials.ToMap())
-	_ = a.db.SetAccountStatus(ctx, acc.ID, "alive")
+	recovered, err := a.db.SetAccountAlive(ctx, acc.ID)
+	if err == nil && recovered {
+		a.notifyAccountRecovered(acc)
+	}
 	if avatar := a.resolveAvatar(ctx, acc.OpenID, acc.UserInfo); avatar != "" {
 		_ = a.db.SetAccountProfile(ctx, acc.ID, acc.Nickname, &avatar, acc.UserInfo)
 	}

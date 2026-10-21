@@ -69,8 +69,10 @@ curl -H "Authorization: Bearer YOUR_API_TOKEN" \
 账号登录失效时可通过 [Bark](https://bark.day.app/#/?id=bark) 推送到 iPhone。通知按账号独立配置：
 
 1. 在账号卡片点击「Bark」。
-2. 粘贴 Bark App 中的 device key，可先点「发送测试」确认，再点「保存」；留空保存表示关闭通知。
-3. 同一轮失效只推送一次；账号恢复可用后，下一次失领会重新推送。
+2. 粘贴 Bark App 中的 device key，或直接粘贴推送 URL（形如 `https://api.day.app/<device_key>/`）；可先点「发送测试」确认，再点「保存」，留空保存表示关闭通知。
+3. 同一轮失效只推送一次；账号从失效恢复为可用（重新扫码或自动刷新成功）时会推送一次恢复通知，下一次失领会重新推送。
+
+如果测试返回「Bark 服务中不存在该 device key」，请确认填写的是 Bark App 首页的 device key（通常为 22 位字母数字，不是 API 令牌或 64 位 APNs token），并且弹窗中显示的「推送服务」与 Bark App 里配置的服务器地址一致。
 
 自建 Bark 服务通过 `-bark-server` 或 `YYB_BARK_SERVER` 指定，例如 `YYB_BARK_SERVER=https://bark.example.com`；未设置时使用 `https://api.day.app`。
 

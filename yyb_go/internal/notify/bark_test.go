@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,22 @@ func TestSendReportsUpstreamError(t *testing.T) {
 	err = bark.Send(context.Background(), "bad-key", "标题", "正文")
 	if err == nil || !strings.Contains(err.Error(), "invalid device key") {
 		t.Fatalf("Send() error = %v, want upstream message", err)
+	}
+}
+
+func TestSendClassifiesUnregisteredDevice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"code":400,"message":"failed to get device token: failed to get [abcd] device token from database","timestamp":1}`)
+	}))
+	defer server.Close()
+
+	bark, err := NewBark(server.URL, time.Second)
+	if err != nil {
+		t.Fatalf("NewBark() error = %v", err)
+	}
+	if err := bark.Send(context.Background(), "abcd", "标题", "正文"); !errors.Is(err, ErrDeviceNotRegistered) {
+		t.Fatalf("Send() error = %v, want ErrDeviceNotRegistered", err)
 	}
 }
 

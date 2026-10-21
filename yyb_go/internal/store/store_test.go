@@ -116,6 +116,41 @@ func TestOpenAppliesConnectionPragmas(t *testing.T) {
 	}
 }
 
+func TestSetAccountAliveRecoveryTransitions(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	acc, err := db.UpsertAccount(ctx, "openid-recover", "buffer", nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+
+	// 未经历失效时不应触发恢复通知。
+	if recovered, err := db.SetAccountAlive(ctx, acc.ID); err != nil || recovered {
+		t.Fatalf("SetAccountAlive() = %v, %v; want false, nil", recovered, err)
+	}
+	if err := db.SetAccountStatus(ctx, acc.ID, "expired"); err != nil {
+		t.Fatalf("set expired: %v", err)
+	}
+	if recovered, err := db.SetAccountAlive(ctx, acc.ID); err != nil || !recovered {
+		t.Fatalf("recover from expired = %v, %v; want true, nil", recovered, err)
+	}
+	// 同一轮只触发一次。
+	if recovered, err := db.SetAccountAlive(ctx, acc.ID); err != nil || recovered {
+		t.Fatalf("second SetAccountAlive() = %v, %v; want false, nil", recovered, err)
+	}
+	// 再次失效后应重新允许恢复通知。
+	if err := db.SetAccountStatus(ctx, acc.ID, "expired"); err != nil {
+		t.Fatalf("set expired again: %v", err)
+	}
+	if recovered, err := db.SetAccountAlive(ctx, acc.ID); err != nil || !recovered {
+		t.Fatalf("second recovery = %v, %v; want true, nil", recovered, err)
+	}
+}
+
 func TestResolveAccountAmbiguousNumericRef(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

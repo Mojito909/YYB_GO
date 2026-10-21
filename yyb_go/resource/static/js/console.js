@@ -220,11 +220,11 @@ function showBarkModal(account) {
   overlay.innerHTML = `
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="barkTitle" style="width:min(500px,100%)">
       <h3 id="barkTitle">Bark 通知 · ${escapeHTML(name)}</h3>
-      <p class="modal-msg">账号登录失效时通过 Bark 推送提醒。device key 可在 Bark App 中复制，留空保存表示关闭通知。</p>
+      <p class="modal-msg">device key 可在 Bark App 首页复制（通常为 22 位字母数字），也可以直接粘贴推送 URL（形如 https://api.day.app/&lt;key&gt;/）。请不要填 API 令牌或 64 位 APNs token；留空保存表示关闭通知。</p>
       <dl class="kv-grid" id="barkStatus"><dt>状态</dt><dd>加载中…</dd></dl>
       <div class="field">
-        <label for="barkKeyInput">Bark device key</label>
-        <input class="input" id="barkKeyInput" autocomplete="off" spellcheck="false" placeholder="粘贴 Bark App 中的 device key">
+        <label for="barkKeyInput">Bark device key 或推送 URL</label>
+        <input class="input" id="barkKeyInput" autocomplete="off" spellcheck="false" placeholder="device key 或 https://api.day.app/<key>/">
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-act="cancel">关闭</button>
@@ -243,7 +243,8 @@ function showBarkModal(account) {
     statusEl.innerHTML = "";
     const rows = [
       ["状态", info && info.enabled ? "已开启" : "未开启"],
-      ["Bark key", info && info.key_hint ? info.key_hint : "—"]
+      ["Bark key", info && info.key_hint ? info.key_hint : "—"],
+      ["推送服务", info && info.server ? info.server : "—"]
     ];
     for (const [k, v] of rows) {
       const dt = document.createElement("dt");

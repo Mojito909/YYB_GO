@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS wechat_accounts (
     last_checked_at INTEGER,
     bark_key        TEXT    NOT NULL DEFAULT '',
     expired_notified INTEGER NOT NULL DEFAULT 0,
+    recovery_notified INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
@@ -277,6 +278,7 @@ func migrateAccountsBarkColumns(ctx context.Context, db *sql.DB) error {
 	}{
 		{"bark_key", "ALTER TABLE wechat_accounts ADD COLUMN bark_key TEXT NOT NULL DEFAULT ''"},
 		{"expired_notified", "ALTER TABLE wechat_accounts ADD COLUMN expired_notified INTEGER NOT NULL DEFAULT 0"},
+		{"recovery_notified", "ALTER TABLE wechat_accounts ADD COLUMN recovery_notified INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, col := range columns {
 		has, err := sqliteColumnExists(ctx, db, "wechat_accounts", col.name)
@@ -526,19 +528,68 @@ func (db *DB) SetAccountCredential(ctx context.Context, id int64, loginBuffer st
 
 func (db *DB) SetAccountStatus(ctx context.Context, id int64, status string) error {
 	now := time.Now().Unix()
-	// 账号恢复可用后重置通知标记，下一次失效可以再次推送。
-	if status == "alive" {
+	switch status {
+	case "alive":
+		// 账号恢复可用后重置失效通知标记，下一次失效可以再次推送。
 		_, err := db.sql.ExecContext(ctx,
 			"UPDATE wechat_accounts SET status=?, last_checked_at=?, updated_at=?, expired_notified=0 WHERE id=?",
 			status, now, now, id,
 		)
 		return err
+	case "expired":
+		// 进入新的失效周期，允许本轮恢复时再次推送恢复通知。
+		_, err := db.sql.ExecContext(ctx,
+			"UPDATE wechat_accounts SET status=?, last_checked_at=?, updated_at=?, recovery_notified=0 WHERE id=?",
+			status, now, now, id,
+		)
+		return err
+	default:
+		_, err := db.sql.ExecContext(ctx,
+			"UPDATE wechat_accounts SET status=?, last_checked_at=?, updated_at=? WHERE id=?",
+			status, now, now, id,
+		)
+		return err
 	}
-	_, err := db.sql.ExecContext(ctx,
-		"UPDATE wechat_accounts SET status=?, last_checked_at=?, updated_at=? WHERE id=?",
-		status, now, now, id,
-	)
-	return err
+}
+
+// SetAccountAlive 把账号标记为可用，并在 expired → alive 的首次转换时返回 true，
+// 由调用方发送一次恢复通知。recovery_notified 保证并发刷新时只触发一次。
+func (db *DB) SetAccountAlive(ctx context.Context, id int64) (bool, error) {
+	now := time.Now().Unix()
+	res, err := db.sql.ExecContext(ctx,
+		`UPDATE wechat_accounts
+		SET status='alive', last_checked_at=?, updated_at=?, expired_notified=0, recovery_notified=1
+		WHERE id=? AND status='expired' AND recovery_notified=0`,
+		now, now, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return true, nil
+	}
+	_, err = db.sql.ExecContext(ctx,
+		"UPDATE wechat_accounts SET status='alive', last_checked_at=?, updated_at=?, expired_notified=0 WHERE id=?",
+		now, now, id)
+	return false, err
+}
+
+// ClaimAccountRecoveryNotification 原子地领取一次恢复通知。
+// 用于重新扫码等不经过 SetAccountAlive 的恢复路径。
+func (db *DB) ClaimAccountRecoveryNotification(ctx context.Context, id int64) (bool, error) {
+	res, err := db.sql.ExecContext(ctx,
+		"UPDATE wechat_accounts SET recovery_notified=1 WHERE id=? AND recovery_notified=0", id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // SetAccountBark 保存账号的 Bark device key，空字符串表示关闭通知。

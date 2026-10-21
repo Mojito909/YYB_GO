@@ -344,12 +344,13 @@ func newOpenAPISpec() map[string]any {
 				}),
 				"BarkConfigRequest": objectSchema([]string{"ref"}, map[string]any{
 					"ref": map[string]any{"type": "string", "description": "账号 ID、UIN 或 openid。"},
-					"key": map[string]any{"type": "string", "description": "Bark device key；留空表示关闭通知。测试接口不传时使用已保存的 key。"},
+					"key": map[string]any{"type": "string", "description": "Bark device key，或形如 https://api.day.app/<key>/ 的推送 URL；留空表示关闭通知。测试接口不传时使用已保存的 key。"},
 				}),
 				"BarkStatus": objectSchema([]string{"account_id", "enabled"}, map[string]any{
 					"account_id": int64Schema(),
 					"enabled":    map[string]any{"type": "boolean"},
 					"key_hint":   map[string]any{"type": "string", "description": "脱敏后的 device key。"},
+					"server":     map[string]any{"type": "string", "description": "当前使用的 Bark 服务地址。"},
 				}),
 				"RefreshResult": objectSchema([]string{"id", "openid", "status"}, map[string]any{
 					"id":       int64Schema(),
