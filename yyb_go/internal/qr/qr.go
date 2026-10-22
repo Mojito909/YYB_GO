@@ -20,7 +20,7 @@ import (
 
 const (
 	oauthURL = "https://open.weixin.qq.com/connect/qrconnect" +
-		"?appid=wxd44977328b36e647" +
+		"?appid=" + protocol.WechatAppID +
 		"&redirect_uri=https://yybadaccess.3g.qq.com/pc_yyb/pcyyb_oauth?login_type=WX" +
 		"&response_type=code&scope=snsapi_login,snsapi_runtime_pcsdk" +
 		"&state=web&fast_login=1&self_redirect=true"

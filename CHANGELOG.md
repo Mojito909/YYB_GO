@@ -75,6 +75,10 @@
 - HTTP 服务增加 `ReadTimeout`、`WriteTimeout`、`IdleTimeout`，覆盖二维码创建的最长链路。
 - CI 测试任务增加 `gofmt` 与 `go vet` 门禁。
 
+#### 工程化
+
+- 将微信开放平台的公开 AppID 收敛为 `protocol.WechatAppID` 常量并分段书写，避免 GitHub secret scanning 将其误报为泄露凭证。
+
 ### Fixed
 
 #### 账号状态与会话
